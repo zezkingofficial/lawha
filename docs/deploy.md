@@ -37,8 +37,10 @@ Vercel, connected to the GitHub repo: every push to `main` deploys; pull request
 
 ## Live
 
-- URL: _to fill after the first deploy_
-- Checked on the live site: _to fill_
+- URL: **https://lawha-pied.vercel.app** (Vercel, auto-deploys every push to `main` of `zezkingofficial/lawha`)
+- Supabase Site URL and Redirect URLs set to that address by the owner (2026-11-08)
+- Checked on the live site (2026-11-08, Chrome, desktop 1440 + phone 390): sign up a new company → home; open the orders board, add an order, set its status; reload keeps it (stored on the server); a second signed-in phone sees a status change live; Team page creates an invite link; no page errors; no sideways scroll on the phone.
+- Found while checking: the app created two auth clients at start-up (React strict mode); now one shared client per page. Fixed in `1ddce21`, redeployed in about 30 seconds.
 
 ## First week, watch
 
