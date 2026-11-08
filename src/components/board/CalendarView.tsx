@@ -25,7 +25,7 @@ export function CalendarView({ bundle, items, dateColumnId, onDateColumn, canEdi
   const [selected, setSelected] = useState<string | null>(today);
   const [over, setOver] = useState<string | null>(null);
 
-  const weekStart = lang === 'ar' ? 6 : 1; // Saturday in the UAE week, Monday in English
+  const weekStart = lang === 'ar' ? 6 : 1; // week starts Saturday in Arabic (UAE), on day 1 in English
   const days = useMemo(() => {
     const first = new Date(month + '-01T12:00:00');
     const offset = (first.getDay() - weekStart + 7) % 7;

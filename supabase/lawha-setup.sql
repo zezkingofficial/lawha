@@ -1,5 +1,5 @@
--- Lawha database setup for Supabase. Paste all of this into SQL Editor and press Run, once.
--- Generated 2026-11-08 from migrations 0001 + 0002 + 0003
+-- Lawha database setup for Supabase (fresh project). Paste into SQL Editor and Run, once.
+-- migrations 0001 + 0002 + 0003 + 0004
 
 -- Phase 1 schema: workspaces, boards, groups, items, subitems, typed columns,
 -- views, updates, files, notifications, permissions. Postgres 15+ on Supabase.
@@ -950,3 +950,16 @@ language sql stable security invoker set search_path = public as $$
 $$;
 revoke execute on function public.account_people from public, anon;
 grant execute on function public.account_people to authenticated;
+
+-- 0004: someone opening an invitation link is not signed in yet, so the preview
+-- must work for anonymous visitors. It only answers for a 48-character random token.
+create or replace function public.invitation_preview(p_token text)
+returns table (account_name text, role text, email text, expired boolean, used boolean)
+language sql stable security definer set search_path = public as $$
+  select a.name, i.role, i.email, i.expires_at < now(), i.accepted_at is not null
+    from invitations i join accounts a on a.id = i.account_id
+   where i.token = p_token and length(p_token) >= 32
+$$;
+revoke execute on function public.invitation_preview(text) from public;
+grant execute on function public.invitation_preview(text) to anon, authenticated;
+

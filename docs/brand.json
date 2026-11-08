@@ -1,0 +1,7 @@
+{
+  "_about": "Used by sweep.py before deploy. Working name 'Lawha' (لوحة) until replica-brand picks the final name.",
+  "name": "Lawha",
+  "avoid": ["monday", "monday.com", "mondaycom", "Work OS", "WorkOS", "Sidekick"],
+  "domains": ["monday.com", "monday.app", "mondaycdn.com"],
+  "colors": ["#6161FF", "#5034FF", "#00C875", "#FDAB3D", "#E2445C", "#579BFC", "#A25DDC", "#FF158A", "#0073EA"]
+}

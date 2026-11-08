@@ -1,0 +1,95 @@
+feature,area,priority,original,clone,notes,phase
+Sign up and log in with email,onboarding,must,yes,yes,Supabase Auth: sign up creates the company; sign in; password reset,1
+Sign up with Google,onboarding,should,yes,no,,1
+Invite teammates by email,team,must,yes,yes,"invite link per email from the Team page, shared on WhatsApp; single use, 14 days",1
+Roles: admin member viewer guest,team,must,yes,yes,"Team page: change role, remove person; all four enforced by RLS",1
+Arabic UI with full right-to-left layout,i18n,must,no,yes,default language; logical CSS; sticky name column on the start side,1
+English UI,i18n,must,yes,yes,switch in avatar menu,1
+Workspaces,structure,must,yes,yes,create and rename,1
+Folders and sub-folders,structure,should,yes,no,,1
+Create board from scratch,boards,must,yes,yes,with default group and people/status/date columns,1
+Create board from template,boards,should,yes,no,our own templates (orders production deliveries),1
+Groups: add rename colour collapse reorder,boards,must,yes,yes,move up/down from the group menu (drag for groups not yet),1
+Items: add rename reorder delete with undo,boards,must,yes,yes,drag rows within and across groups on desktop; paused while sorting,1
+Move item to another group or board,boards,must,yes,partial,move to group from the row menu or by drag; move to another board to do,1
+Subitems with their own columns,boards,must,yes,yes,"expand per item, own column set created on first subitem, open in item card",1
+Group sums footer (count sum average),boards,should,yes,partial,sum for numbers and status distribution; count/average options to do,1
+Board search filter sort hide columns,boards,must,yes,yes,"search + condition builder (is/is not/empty/contains/greater/less/before/after) + sort + hide, saved per view",1
+Person filter,boards,must,yes,yes,any board member,1
+Real-time updates when others edit,boards,must,yes,yes,Supabase Realtime across devices; verified on the real project,1
+Column: Status with custom labels and done label,columns,must,yes,yes,"label editor: rename, recolour, done flag, add, delete (clears values)",1
+Column: People,columns,must,yes,yes,,1
+Column: Date,columns,must,yes,yes,"quick picks, overdue in red unless done",1
+Column: Text,columns,must,yes,yes,,1
+Column: Long text,columns,must,yes,yes,,1
+Column: Numbers with unit,columns,must,yes,yes,AED and pieces units; accepts Arabic digits; rejects non-numbers,1
+Column: Dropdown,columns,must,yes,yes,"create options from the cell, multi-select",1
+Column: Files,columns,must,yes,yes,"upload from cell; demo limit 2 MB (browser storage), 100 MB with Supabase Storage",1
+Column: Timeline,columns,must,yes,yes,progress bar to today,1
+Column: Phone,columns,must,yes,yes,validated; WhatsApp shortcut,1
+Column: Checkbox,columns,must,yes,yes,,1
+Column: Link and Email,columns,should,yes,yes,,1
+Column: Priority and Label,columns,should,yes,no,same engine as Status,1
+Column: Tags,columns,should,yes,no,,2
+Column: Formula,columns,should,yes,no,Pro feature in original,2
+Column: Connect boards,columns,should,yes,no,needed for CRM,2
+Column: Mirror,columns,should,yes,no,needed for CRM,2
+Column: Progress tracking,columns,could,yes,no,,2
+Column: Time tracking,columns,could,yes,no,Pro feature in original,2
+Column: Rating Vote Location Country World clock Week Hour Color,columns,could,yes,no,,2
+Column: Creation log Last updated Auto number Item ID,columns,should,yes,no,,2
+Column: Button,columns,could,yes,no,,2
+Column: Dependency,columns,could,yes,no,,2
+Column: AI column,columns,could,yes,no,own API keys,5
+Change a column's type,columns,should,yes,no,,2
+View: Table (main),views,must,yes,yes,,1
+View: Kanban,views,must,yes,yes,"drag on desktop, ""move to"" select on touch and keyboard",1
+View: Calendar,views,must,yes,yes,"month grid, week starts Saturday in Arabic, drag to reschedule on desktop, tap a day on phones",1
+Saved filters per view,views,must,yes,yes,shared views saved for everyone; viewers filter locally; personal views for people who cannot edit,1
+View: Timeline / Gantt,views,should,yes,no,,2
+View: Chart,views,should,yes,no,,2
+View: Form (public link creates items),views,should,yes,no,,2
+View: Files,views,could,yes,no,,2
+View: Workload,views,could,yes,no,,5
+View: Map,views,could,yes,no,,5
+Lock and pin views,views,could,yes,partial,add/rename/delete views; personal views; lock and pin to do,2
+Item card with updates feed,collaboration,must,yes,yes,"side panel from the end side, full screen on phones; updates, details, files, activity tabs; shareable URL",1
+@mention in updates,collaboration,must,yes,yes,"suggestions on @, keyboard pick; mentioned people notified",1
+Attach files to updates,collaboration,must,yes,yes,images previewed; demo limit 2 MB,1
+Replies and edit or delete updates,collaboration,should,yes,yes,"one reply level; edit own, delete own (admins any)",1
+Activity log per item and board,collaboration,should,yes,partial,per item in the card; board-wide log to do,2
+Inbox notifications,collaboration,must,yes,yes,"mention, assigned, update; unread badge; filters; mark read",1
+Email notifications,collaboration,should,yes,no,digest job comes with the backend (Resend),1
+My Work across boards,collaboration,must,yes,yes,"grouped overdue/today/week/later/no date/done, includes subitems",1
+Board permissions: main shareable private,permissions,must,yes,yes,share dialog; private boards hidden from non-members; enforced in data layer and SQL,1
+Guests on shareable boards,permissions,should,yes,yes,guests see only boards shared with them and only those workspaces,1
+Import board from Excel or CSV,data,should,yes,no,,2
+Export table to Excel,data,should,yes,no,,2
+Docs with embedded boards,docs,could,yes,no,,5
+Dashboards with widgets from many boards,dashboards,should,yes,no,,2
+Automations: status change notify move item,automations,should,yes,no,,2
+Automations: custom builder trigger condition actions,automations,should,yes,no,,2
+Automations: date arrives and recurring triggers,automations,should,yes,no,,2
+Automation run log and failures,automations,should,yes,no,,2
+Automation action limits per plan,automations,could,yes,no,,5
+CRM: Leads board with qualify and convert,crm,should,yes,no,,3
+CRM: Contacts and Accounts auto-linked by email domain,crm,should,yes,no,,3
+CRM: Deals pipeline by stage with value,crm,should,yes,no,,3
+CRM: Activities log (calls meetings),crm,should,yes,no,,3
+CRM: Gmail and Outlook email timeline,crm,should,yes,no,own Google and Microsoft apps,3
+CRM: Quotes and invoices PDF,crm,should,yes,no,AED and VAT,3
+CRM: Sales dashboard,crm,could,yes,no,,3
+WhatsApp messages on contact timeline,crm,could,no,no,our addition for Gulf market,3
+Mobile: boards list and board,mobile,must,yes,no,,4
+Mobile: item card change status add update,mobile,must,yes,no,,4
+Mobile: photo from camera to item,mobile,should,yes,no,,4
+Mobile: push notifications and inbox,mobile,must,yes,no,,4
+Mobile: My Work,mobile,should,yes,no,,4
+Offline edits on mobile,mobile,could,no,no,our addition: original offline support unconfirmed,4
+Billing and plans,product,could,yes,no,needed only to sell it,5
+Apps marketplace,integrations,could,yes,skip,their partner network,
+Template library content,content,could,yes,skip,their content; we write our own templates,
+AI credits and Sidekick,ai,could,yes,skip,their AI product; own AI helpers listed separately,
+HIPAA and enterprise security certifications,enterprise,could,yes,skip,a compliance business not a feature,
+Native partner integrations (Slack Jira Salesforce etc),integrations,could,yes,skip,each needs its own official API; not in plan,
+Their brand name logo colours and copy,brand,must,yes,skip,never copied; replica-brand gives ours,

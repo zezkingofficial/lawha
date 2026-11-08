@@ -1,0 +1,54 @@
+# Build log: Lawha (working name)
+
+Code: `lawha/` (Next.js app) · demo build: `npm run demo` → `dist-demo/index.html` (single file, same screens, hash routing).
+Data: Supabase (`src/lib/data/supabase.ts`) when the env vars are set; the in-browser demo layer (`src/lib/data/fake.ts`) otherwise. Same `DataLayer` interface. See `backend.md`. Parity: 52.6 / 100, must-haves 29 of 37 (batch 3). Batch 2: 42.0, 20 of 37. Batch 1: 20.7, 8 of 37.
+
+| ID | date | status | what is missing | harder than expected |
+| --- | --- | --- | --- | --- |
+| S01 sign in | 2026-11-08 | partial | real email/Google auth, sign up, invites (backend stage) | — |
+| S03 home | 2026-11-08 | partial | recent boards, inbox preview | — |
+| S04 sidebar | 2026-11-08 | partial | folders, drag reorder, search; workspace create/rename and drawer done | — |
+| S05 board table | 2026-11-08 | partial | drag for groups, move item to another board, virtualised rows for 1,000+ items, keyboard cell navigation (rows drag on desktop; menu on touch) | Sticky name column in RTL: the rounded grid's `overflow: hidden` trapped `position: sticky`; fixed with `overflow: clip`. The grid's auto track also stretched the page on phones until it became `minmax(0, 1fr)`. |
+| S06 toolbar | 2026-11-08 | done | — | A new filter started on the people column, so the first thing people saw was names; it now starts on status. |
+| views | 2026-11-08 | partial | lock and pin views | Viewers cannot change a shared view, so their filters stay in the tab and the toolbar says they are not saved. |
+| S13 calendar | 2026-11-08 | done | week view | Long item names pushed past their day until the grid tracks got `minmax(0, 1fr)`. |
+| S23 sharing | 2026-11-08 | done | invites by email (backend) | — |
+| S08 cell editors | 2026-11-08 | done | all 13 phase 1 types: status, people, date, timeline, text, long text, numbers, dropdown, checkbox, phone, email, link, files | An empty phone cell had zero height and could not be clicked; fixed with a minimum row height. |
+| S07 column center | 2026-11-08 | partial | add any of 13 types, rename, delete with confirm; change type and reorder to do | — |
+| S09 label editor | 2026-11-08 | done | — | Deleting a label must not leave items pointing at nothing; the data layer clears those values. **Backend note:** do the same in SQL (a function that updates column settings and strips removed label/option ids). |
+| S10 item card | 2026-11-08 | done | rich text formatting (plain text with mentions for now) | Picking a mention then typing fast put the first letter in the wrong place; the caret is now set in a layout effect right after React commits, before the next key. |
+| S11 subitems | 2026-11-08 | done | drag reorder | Subitem names slid under the sticky item-name column when the table scrolled; the subitem table now sticks to the start side too. |
+| S19 My Work | 2026-11-08 | done | — | — |
+| S20 inbox | 2026-11-08 | done | email digest (backend) | — |
+| S12 kanban | 2026-11-08 | done | — | HTML drag does not work on touch screens, so each card also has a "move to" select (works on phones and with a keyboard). |
+| live sync | 2026-11-08 | partial | across devices needs Supabase Realtime | BroadcastChannel alone dropped some updates between tabs in testing; added the `storage` event as a second signal. 8/8 runs pass after. |
+
+## Backend (2026-11-08)
+
+- Migrations 0002–0004 tested locally against Postgres with Supabase stand-ins, then run by the owner in the SQL Editor.
+- Real project: 9/9 integration tests (isolation between companies, invitations, guest, viewer, mention, live update, files). Browser test of the real app: sign up, edit, reload, second device live, invite link.
+- Found on the real project: an invitation preview failed for visitors who were not signed in yet (needed a definer function, 0004); the database's "not editable" refusal showed as raw English instead of the view-only message.
+
+## Checks run, batch 3
+
+- 29/29 unit tests (adds: guest scoping, private boards, sharing rules and last owner, saved views and personal views, group move/recolour, removed labels/options clear values, workspaces; view filters and sorts as a pure module)
+- Browser flow test 3: status filter saved with the view across reload, person filter, sort descending, hide column, rename a label, move to group, drag a row, group up, calendar day list, private board hidden from a member, new workspace, guest sees only the shared board, viewer filters locally. Phone: calendar and filter popover fit 390px. No console errors.
+- Batch 1 and 2 suites rerun: all pass. `next build` passes.
+
+## Checks run, batch 2
+
+- typecheck clean · 17/17 data tests (adds: assignment and mention notifications never to the author or twice, mark read, subitems, column add/rename/delete, new type validation, My Work, files limit, activity) · `next build` passes · SQL access tests pass after adding the new column checks to `schema.sql`
+- Browser flow test 2: item card from the name, @mention by keyboard, reply, edit a cell in Details, activity entry, Escape closes, subitems add, add checkbox column and tick it, new dropdown option from the cell, invalid phone rejected, inbox shows the mention with the right unread count and opens the item, My Work groups, item card full screen at 390px. No console errors.
+- Batch 1 flow test rerun: all pass.
+
+## Checks run, batch 1
+
+- `npm run typecheck`: clean
+- `npm test`: 9/9 (data layer: order, add, one-cell writes, validation, move, delete/undo, viewer blocked, new board, persistence)
+- `next build`: passes
+- Browser flow test (demo build, Chrome): sign in, live status change across two tabs, live add across tabs, invalid number rejected, Arabic digits accepted, delete + undo, search, kanban move, new board, viewer read-only, phone width 390 with no page overflow. No console errors (only a missing favicon on the local server).
+- Screenshots: `clone-screens/` (S01, S04 drawer, S05 at 1440/390/dark, S08 popover, S12).
+
+## Next
+
+Web phase 1 is done end to end on a real backend, except moving an item to another board. Remaining must-haves are the mobile app (phase 4). Next: deploy (Vercel + SMTP + email confirmation back on), then replica-test across all flows, then the mobile app.
