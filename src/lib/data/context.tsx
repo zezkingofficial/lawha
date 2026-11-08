@@ -5,17 +5,25 @@ import { browserPersist, createFakeLayer } from './fake';
 import { createSupabaseLayer } from './supabase';
 import type { ActivityEntry, Asset, BoardBundle, DataLayer, MyWorkRow, Notification, Profile, Update, Workspace, Board } from './types';
 
-// Swap point: replica-backend replaces createFakeLayer(...) with the Supabase layer.
+// Swap point: the Supabase layer when configured, the demo layer otherwise.
 const Ctx = createContext<DataLayer | null>(null);
+
+// One layer (and one Supabase client) per page: React's strict mode mounts twice in
+// development, and two auth clients sharing one session can race on token refresh.
+let shared: DataLayer | null = null;
+function sharedLayer(): DataLayer {
+  if (shared) return shared;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  shared = url && key ? createSupabaseLayer(createClient(url, key)) : createFakeLayer(browserPersist());
+  return shared;
+}
 
 export function DataProvider({ children, layer }: { children: ReactNode; layer?: DataLayer }) {
   const [d, setD] = useState<DataLayer | null>(layer ?? null);
   useEffect(() => {
     if (layer) return;
-    // Real backend when the project's URL and publishable key are configured; the demo layer otherwise.
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-    setD(url && key ? createSupabaseLayer(createClient(url, key)) : createFakeLayer(browserPersist()));
+    setD(sharedLayer());
   }, [layer]);
   if (!d) return null;
   return <Ctx.Provider value={d}>{children}</Ctx.Provider>;
