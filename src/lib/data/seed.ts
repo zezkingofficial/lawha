@@ -1,5 +1,5 @@
 import { generateNKeysBetween } from 'fractional-indexing';
-import type { Account, ActivityEntry, Asset, Board, Column, Group, Item, Notification, Profile, StatusLabel, Update, Workspace } from './types';
+import type { Account, ActivityEntry, Asset, Board, BoardMember, Column, Group, Item, Notification, Profile, StatusLabel, Update, View, ViewSettings, Workspace } from './types';
 
 // Example data for the Tafseel build. Every order below is a sample, not a real customer.
 
@@ -17,9 +17,13 @@ export interface DB {
   notifications: Notification[];
   subscriptions: { userId: string; itemId: string }[];
   activity: ActivityEntry[];
+  views: View[];
+  boardMembers: BoardMember[];
 }
 
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
+
+export const emptySettings = (): ViewSettings => ({ filters: [], sort: null, hiddenColumnIds: [], personId: null });
 
 export const ORDER_LABELS: StatusLabel[] = [
   { id: 'quote', name: 'عرض سعر', color: 'grey', done: false },
@@ -57,6 +61,7 @@ export function makeSeed(): DB {
     { id: 'u-sara', fullName: 'سارة', color: 'purple', role: 'member' },
     { id: 'u-mohamed', fullName: 'محمد', color: 'orange', role: 'member' },
     { id: 'u-yousef', fullName: 'يوسف', color: 'navy', role: 'viewer' },
+    { id: 'u-guest', fullName: 'متجر لمسة', color: 'pink', role: 'guest' },
   ];
   const wk = keys(2);
   const workspaces: Workspace[] = [
@@ -67,7 +72,7 @@ export function makeSeed(): DB {
   const boards: Board[] = [
     board('b-orders', 'ws-factory', 'طلبات العملاء', 'كل طلب من أول عرض السعر لحد التسليم', 'طلب', bk[0]),
     board('b-production', 'ws-factory', 'خط الإنتاج', 'مراحل التصنيع لكل طلب', 'مهمة', bk[1]),
-    board('b-delivery', 'ws-factory', 'التسليمات', 'مواعيد ومكان التسليم', 'تسليم', bk[2]),
+    { ...board('b-delivery', 'ws-factory', 'التسليمات', 'مواعيد ومكان التسليم', 'تسليم', bk[2]), kind: 'shareable' },
     board('b-leads', 'ws-sales', 'عملاء محتملين', 'استفسارات واتساب وإنستجرام', 'عميل', bk[3]),
   ];
 
@@ -166,7 +171,27 @@ export function makeSeed(): DB {
     { userId: 'u-sara', itemId: 'i-1' }, { userId: 'u-mohamed', itemId: 'i-1' },
   ];
 
+  // a main table and a kanban on every board; a calendar on orders
+  const views: View[] = [];
+  for (const b of boards) {
+    const vk = keys(3);
+    views.push({ id: `v-${b.id}-main`, boardId: b.id, type: 'table', name: 'الجدول الرئيسي', settings: emptySettings(), ownerId: null, isMain: true, position: vk[0] });
+    views.push({ id: `v-${b.id}-kanban`, boardId: b.id, type: 'kanban', name: 'كانبان', settings: emptySettings(), ownerId: null, isMain: false, position: vk[1] });
+    if (b.id === 'b-orders') views.push({ id: 'v-b-orders-cal', boardId: b.id, type: 'calendar', name: 'تقويم التسليم', settings: emptySettings(), ownerId: null, isMain: false, position: vk[2] });
+  }
+  const boardMembers: BoardMember[] = [
+    ...boards.map((b) => ({ boardId: b.id, userId: 'u-ahmed', role: 'owner' as const })),
+    { boardId: 'b-delivery', userId: 'u-guest', role: 'editor' },
+  ];
+  // a delivery the client can follow
+  items.push({
+    id: 'i-d-1', boardId: 'b-delivery', groupId: 'g-del-1', parentItemId: null, name: 'تسليم علب ملابس مغناطيس · متجر لمسة', position: keys(1)[0],
+    vals: { 'c-b-delivery-status': { label_id: 'working' }, 'c-b-delivery-date': { date: '2026-11-15' }, 'c-b-delivery-owner': { user_ids: ['u-sara'] } },
+    createdBy: 'u-ahmed', deletedAt: null, createdAt: T0, updatedAt: T0,
+  });
+
   return {
+    views, boardMembers,
     version: DB_VERSION, account: { id: ACC, name: 'تفصيل بوكسز' }, members, workspaces, boards, groups, columns, items,
     updates, assets: [], notifications, subscriptions, activity: [],
   };

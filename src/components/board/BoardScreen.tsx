@@ -2,32 +2,41 @@
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import * as Popover from '@radix-ui/react-popover';
 import clsx from 'clsx';
-import { ChevronDown, ChevronLeft, Columns3, Ellipsis, LayoutGrid, MessageSquare, Plus, Search, Table2, Trash2, UserRound, Pencil, CalendarDays, Radio, CircleDot, Users, Calendar, Type, Hash, AlignRight, ListChecks, SquareCheck, Phone, GanttChart, Paperclip, Link2, Mail, Maximize2 } from 'lucide-react';
-import { Fragment, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, Columns3, Ellipsis, FolderInput, GripVertical, LayoutGrid, MessageSquare, Palette, Plus, Table2, Trash2, Pencil, CalendarDays, Radio, CircleDot, Users, Calendar, Type, Hash, AlignRight, ListChecks, SquareCheck, Phone, GanttChart, Paperclip, Link2, Mail, Maximize2 } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useBoard, useData, useMe, useMembers } from '@/lib/data/context';
-import { CellError, searchText } from '@/lib/data/validate';
+import { emptySettings } from '@/lib/data/seed';
+import { CellError } from '@/lib/data/validate';
 import { NotAllowed } from '@/lib/data/fake';
-import type { BoardBundle, CellValue, Column, ColumnType, Group, Item, PeopleValue, Profile, StatusValue, NumbersValue } from '@/lib/data/types';
+import type { BoardBundle, CellValue, Column, ColumnType, Group, Item, LabelColor, PeopleValue, Profile, StatusValue, NumbersValue, View, ViewSettings, ViewType } from '@/lib/data/types';
 import { fmtNumber, labelBg, labelFg } from '@/lib/format';
 import { useLang } from '@/lib/i18n';
 import { useRouter } from '@/lib/router';
+import { applyView, isFiltering } from '@/lib/view';
 import { AvatarStack, Button, IconButton, useToast } from '../ui';
 import { AnyCell } from './cells';
+import { CalendarView } from './CalendarView';
 import { ItemPanel } from './ItemPanel';
+import { ShareButton } from './ShareDialog';
+import { BoardToolbar } from './Toolbar';
 
-type View = 'table' | 'kanban';
+const VIEW_ICON: Record<ViewType, React.ReactNode> = { table: <Table2 size={15} />, kanban: <Columns3 size={15} />, calendar: <CalendarDays size={15} /> };
 
 export function BoardScreen({ boardId }: { boardId: string }) {
   const { t } = useLang();
+  const d = useData();
+  const toast = useToast();
   const { data: bundle, loading } = useBoard(boardId);
   const { data: me } = useMe();
   const { data: members = [] } = useMembers();
   const { route, go } = useRouter();
   const openItem = (itemId: string) => go({ name: 'board', boardId, itemId });
-  const [view, setView] = useState<View>('table');
+  const [viewId, setViewId] = useState<string | null>(null);
   const [q, setQ] = useState('');
-  const [mine, setMine] = useState(false);
+  const [local, setLocal] = useState<Record<string, Partial<ViewSettings>>>({});
   const newItemRef = useRef<HTMLInputElement | null>(null);
+  const setCell = useCellSetter();
+  useEffect(() => { setViewId(null); setQ(''); }, [boardId]);
 
   if (loading && !bundle) return <BoardSkeleton />;
   if (!bundle) {
@@ -39,16 +48,25 @@ export function BoardScreen({ boardId }: { boardId: string }) {
     );
   }
 
-  const canEdit = !!me && me.role !== 'viewer';
-  const query = q.trim().toLowerCase();
-  const peopleCols = bundle.columns.filter((c) => c.type === 'people').map((c) => c.id);
-  const visible = (it: Item) => {
-    if (query && !searchText(it.name, it.vals).includes(query)) return false;
-    if (mine && me && !peopleCols.some((cid) => ((it.vals[cid] as PeopleValue | undefined)?.user_ids ?? []).includes(me.id))) return false;
-    return true;
+  const canEdit = bundle.canEdit;
+  const view: View = bundle.views.find((v) => v.id === viewId) ?? bundle.views.find((v) => v.isMain) ?? bundle.views[0]
+    ?? { id: 'none', boardId, type: 'table', name: t('tableView'), settings: emptySettings(), ownerId: null, isMain: true, position: 'a0' };
+  // people who cannot change a shared view still filter it; their changes stay in this tab only
+  const canSaveView = view.ownerId ? view.ownerId === me?.id : canEdit;
+  const settings: ViewSettings = { ...emptySettings(), ...view.settings, ...(local[view.id] ?? {}) };
+  const changeSettings = (patch: Partial<ViewSettings>) => {
+    if (canSaveView && view.id !== 'none') {
+      d.updateView(view.id, { settings: patch }).catch((e) => toast({ tone: 'error', text: (e as Error).message }));
+    } else {
+      setLocal((l) => ({ ...l, [view.id]: { ...(l[view.id] ?? {}), ...patch } }));
+    }
   };
-  const filtering = !!query || mine;
-  const boardMembers = members.filter((m) => m.role !== 'guest');
+  const itemCols = bundle.columns.filter((c) => c.scope === 'item');
+  const topItems = bundle.items.filter((i) => i.parentItemId === null);
+  const shown = applyView(topItems, itemCols, settings, { query: q });
+  const filtering = isFiltering(settings, q);
+  const visibleCols = itemCols.filter((c) => !settings.hiddenColumnIds.includes(c.id));
+  const boardPeople = members.filter((m) => m.role !== 'guest' || bundle.members.some((bm) => bm.userId === m.id));
 
   return (
     <div className="min-w-0">
@@ -62,43 +80,40 @@ export function BoardScreen({ boardId }: { boardId: string }) {
             <Radio size={12} />{t('liveSync')}
           </span>
           {!canEdit && <span className="rounded-pill bg-surface-hover px-2 py-[2px] text-xs text-text-muted">{t('viewOnly')}</span>}
-          <span aria-label={t('members')}><AvatarStack people={boardMembers} /></span>
-          <Button variant="secondary" disabled title={t('soon')}><UserRound size={16} /><span className="hidden sm:inline">{t('invite')}</span></Button>
+          <span aria-label={t('members')}><AvatarStack people={boardPeople} /></span>
+          <ShareButton bundle={bundle} members={members} />
         </div>
       </header>
 
-      <div role="tablist" aria-label="views" className="mb-3 mt-4 flex gap-1 overflow-x-auto border-b border-border">
-        <Tab active={view === 'table'} onClick={() => setView('table')} icon={<Table2 size={15} />}>{t('tableView')}</Tab>
-        <Tab active={view === 'kanban'} onClick={() => setView('kanban')} icon={<Columns3 size={15} />}>{t('kanbanView')}</Tab>
-        <Tab active={false} disabled icon={<CalendarDays size={15} />}>{t('calendarView')}</Tab>
-      </div>
+      <ViewTabs bundle={bundle} active={view} onPick={(v) => setViewId(v.id)} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {canEdit && (
-          <Button variant="primary" onClick={() => { setView('table'); setTimeout(() => newItemRef.current?.focus(), 0); }}>
+        {canEdit && view.type === 'table' && (
+          <Button variant="primary" onClick={() => setTimeout(() => newItemRef.current?.focus(), 0)}>
             <Plus size={16} />{t('newItem')} {bundle.board.itemNoun}
           </Button>
         )}
-        <label className="order-3 flex h-8 w-full items-center gap-2 rounded-sm border border-border-input bg-bg px-[10px] focus-within:border-focus sm:order-none sm:w-[220px]">
-          <Search size={15} className="flex-none text-text-subtle" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('searchItems')} aria-label={t('searchItems')} className="w-full min-w-0 bg-transparent outline-none" />
-        </label>
-        <Button variant="ghost" pressed={mine} onClick={() => setMine((x) => !x)}><UserRound size={16} />{t('mine')}</Button>
-        {filtering && <Button variant="ghost" size="sm" onClick={() => { setQ(''); setMine(false); }}>{t('clearFilters')}</Button>}
-        {canEdit && view === 'table' && <AddGroupButton boardId={boardId} />}
+        <BoardToolbar columns={itemCols} members={boardPeople} settings={settings} onChange={changeSettings} query={q} onQuery={setQ} local={!canSaveView} />
+        {canEdit && view.type === 'table' && <AddGroupButton boardId={boardId} />}
       </div>
 
-      {view === 'table' ? (
+      {view.type === 'table' && (
         <div className="grid grid-cols-[minmax(0,1fr)] gap-7">
           {bundle.groups.length === 0 && <p className="text-text-muted">{t('emptyBoard')}</p>}
           {bundle.groups.map((g, gi) => (
-            <GroupSection key={g.id} group={g} bundle={bundle} items={bundle.items.filter((i) => i.groupId === g.id && i.parentItemId === null)}
-              visible={visible} filtering={filtering} members={members} me={me ?? null} canEdit={canEdit}
-              addRef={gi === 0 ? newItemRef : undefined} onOpen={openItem} />
+            <GroupSection key={g.id} group={g} groups={bundle.groups} bundle={bundle} items={shown.filter((i) => i.groupId === g.id)}
+              cols={visibleCols} filtering={filtering} sorted={!!settings.sort} members={members} me={me ?? null} canEdit={canEdit}
+              addRef={gi === 0 ? newItemRef : undefined} onOpen={openItem} first={gi === 0} last={gi === bundle.groups.length - 1} />
           ))}
         </div>
-      ) : (
-        <KanbanView bundle={bundle} visible={visible} members={members} canEdit={canEdit} onOpen={openItem} />
+      )}
+      {view.type === 'kanban' && (
+        <KanbanView bundle={bundle} items={shown} members={members} canEdit={canEdit} onOpen={openItem}
+          statusColumnId={settings.kanbanColumnId} onStatusColumn={(id) => changeSettings({ kanbanColumnId: id })} />
+      )}
+      {view.type === 'calendar' && (
+        <CalendarView bundle={bundle} items={shown} canEdit={canEdit} onOpen={openItem} onSet={setCell}
+          dateColumnId={settings.dateColumnId} onDateColumn={(id) => changeSettings({ dateColumnId: id })} />
       )}
       {route.name === 'board' && route.itemId && (
         <ItemPanel bundle={bundle} itemId={route.itemId} canEdit={canEdit} onClose={() => go({ name: 'board', boardId })} />
@@ -107,13 +122,53 @@ export function BoardScreen({ boardId }: { boardId: string }) {
   );
 }
 
-function Tab({ active, children, icon, onClick, disabled }: { active: boolean; children: React.ReactNode; icon: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
+function ViewTabs({ bundle, active, onPick }: { bundle: BoardBundle; active: View; onPick: (v: View) => void }) {
+  const { t } = useLang();
+  const d = useData();
+  const toast = useToast();
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const names: Record<ViewType, string> = { table: t('tableView'), kanban: t('kanbanView'), calendar: t('calendarView') };
+  const add = async (type: ViewType) => {
+    try { const v = await d.createView(bundle.board.id, type, names[type]); onPick(v); } catch (e) { toast({ tone: 'error', text: (e as Error).message }); }
+  };
   return (
-    <button type="button" role="tab" aria-selected={active} disabled={disabled} onClick={onClick}
-      className={clsx('-mb-px flex items-center gap-[6px] whitespace-nowrap border-b-2 px-3 py-2 text-sm disabled:opacity-50',
-        active ? 'border-accent font-semibold text-text' : 'border-transparent text-text-muted hover:text-text')}>
-      {icon}{children}
-    </button>
+    <div className="mb-3 mt-4 flex items-end gap-1 overflow-x-auto border-b border-border">
+      <div role="tablist" aria-label={t('viewMenu')} className="flex gap-1">
+        {bundle.views.map((v) => {
+          const canChange = v.ownerId ? true : bundle.canEdit;
+          if (renaming === v.id) {
+            return (
+              <input key={v.id} autoFocus defaultValue={v.name} aria-label={t('viewName')} className="mb-1 h-8 w-[140px] rounded-sm border border-focus bg-bg px-2 text-sm"
+                onBlur={(e) => { setRenaming(null); d.updateView(v.id, { name: e.target.value }); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null); }} />
+            );
+          }
+          return (
+            <div key={v.id} className={clsx('group/tab -mb-px flex items-center border-b-2', active.id === v.id ? 'border-accent' : 'border-transparent')}>
+              <button type="button" role="tab" aria-selected={active.id === v.id} onClick={() => onPick(v)} onDoubleClick={() => canChange && setRenaming(v.id)}
+                className={clsx('flex items-center gap-[6px] whitespace-nowrap px-3 py-2 text-sm', active.id === v.id ? 'font-semibold text-text' : 'text-text-muted hover:text-text')}>
+                {VIEW_ICON[v.type]}{v.name}
+              </button>
+              {canChange && active.id === v.id && (
+                <Dropdown.Root>
+                  <Dropdown.Trigger asChild><IconButton small label={`${t('viewMenu')}: ${v.name}`} className="h-6 w-6"><Ellipsis size={14} /></IconButton></Dropdown.Trigger>
+                  <Menu>
+                    <MenuItem onSelect={() => setRenaming(v.id)} icon={<Pencil size={15} />}>{t('renameView')}</MenuItem>
+                    {!v.isMain && <MenuItem danger onSelect={() => { d.deleteView(v.id); onPick(bundle.views.find((x) => x.isMain) ?? bundle.views[0]); }} icon={<Trash2 size={15} />}>{t('deleteView')}</MenuItem>}
+                  </Menu>
+                </Dropdown.Root>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <Dropdown.Root>
+        <Dropdown.Trigger asChild><IconButton small label={t('addView')} className="mb-1"><Plus size={16} /></IconButton></Dropdown.Trigger>
+        <Menu>
+          {(['table', 'kanban', 'calendar'] as ViewType[]).map((ty) => <MenuItem key={ty} onSelect={() => add(ty)} icon={VIEW_ICON[ty]}>{names[ty]}</MenuItem>)}
+        </Menu>
+      </Dropdown.Root>
+    </div>
   );
 }
 
@@ -137,7 +192,7 @@ function EditableTitle({ value, canEdit, boardId }: { value: string; canEdit: bo
 function AddGroupButton({ boardId }: { boardId: string }) {
   const { t } = useLang();
   const d = useData();
-  return <Button variant="ghost" onClick={() => d.createGroup(boardId, t('addGroup'))}><LayoutGrid size={16} />{t('addGroup')}</Button>;
+  return <Button variant="ghost" onClick={() => d.createGroup(boardId, t('addGroup'))}><LayoutGrid size={16} /><span className="hidden sm:inline">{t('addGroup')}</span></Button>;
 }
 
 // ---------------------------------------------------------------- table
@@ -150,7 +205,7 @@ function useCellSetter() {
     try {
       await d.setCell(item.id, column.id, value);
     } catch (e) {
-      toast({ tone: 'error', text: e instanceof NotAllowed ? t('viewOnlyError') : e instanceof CellError ? t('invalidNumber') : String((e as Error).message) });
+      toast({ tone: 'error', text: e instanceof NotAllowed ? t('viewOnlyError') : e instanceof CellError ? t('invalidValue') : String((e as Error).message) });
     }
   };
 }
@@ -159,27 +214,46 @@ function gridTemplate(columns: Column[]): CSSProperties {
   return { gridTemplateColumns: `4px var(--name-col) ${columns.map((c) => `${c.width}px`).join(' ')} 44px` };
 }
 
-function GroupSection({ group, bundle, items, visible, filtering, members, me, canEdit, addRef, onOpen }: {
-  group: Group; bundle: BoardBundle; items: Item[]; visible: (i: Item) => boolean; filtering: boolean;
-  members: Profile[]; me: Profile | null; canEdit: boolean; addRef?: React.Ref<HTMLInputElement>; onOpen: (id: string) => void;
+const GROUP_COLORS: LabelColor[] = ['blue', 'green', 'orange', 'red', 'purple', 'teal', 'pink', 'navy', 'brown', 'grey', 'yellow', 'lime'];
+
+// drag payload for rows (HTML drag on desktop; the row menu covers touch and keyboard)
+const ROW_MIME = 'application/x-lawha-item';
+
+function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, members, me, canEdit, addRef, onOpen, first, last }: {
+  group: Group; groups: Group[]; bundle: BoardBundle; items: Item[]; cols: Column[]; filtering: boolean; sorted: boolean;
+  members: Profile[]; me: Profile | null; canEdit: boolean; addRef?: React.Ref<HTMLInputElement>; onOpen: (id: string) => void; first: boolean; last: boolean;
 }) {
   const { t, locale } = useLang();
   const d = useData();
   const toast = useToast();
   const [collapsed, setCollapsed] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const shown = items.filter(visible);
-  const cols = bundle.columns.filter((c) => c.scope === 'item');
-  const doneIds = useMemo(() => new Set(cols.flatMap((c) => (c.settings.labels ?? []).filter((l) => l.done).map((l) => l.id))), [cols]);
+  const [dropOn, setDropOn] = useState<string | null>(null);
+  const shown = items;
+  const allCols = bundle.columns.filter((c) => c.scope === 'item');
+  const doneIds = useMemo(() => new Set(allCols.flatMap((c) => (c.settings.labels ?? []).filter((l) => l.done).map((l) => l.id))), [allCols]);
   const style = { ...gridTemplate(cols), '--g': labelBg(group.color) } as CSSProperties;
   const minWidth = `calc(var(--name-col) + ${4 + 44 + cols.reduce((s, c) => s + c.width, 0)}px)`;
   const [open, setOpen] = useState<Set<string>>(new Set());
   const toggleSub = (id: string) => setOpen((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const subCols = bundle.columns.filter((c) => c.scope === 'subitem');
+  const dragEnabled = canEdit && !sorted;
 
   const removeGroup = async () => {
     await d.deleteGroup(group.id);
     toast({ text: `${t('deleted')}: ${group.title}`, undo: () => d.restoreGroup(group.id) });
+  };
+  const dropRow = async (e: React.DragEvent, beforeItemId: string | null) => {
+    const id = e.dataTransfer.getData(ROW_MIME);
+    setDropOn(null);
+    if (!id || id === beforeItemId) return;
+    e.preventDefault();
+    await d.moveItem(id, beforeItemId ? { groupId: group.id, afterId: beforeItemId } : { groupId: group.id });
+  };
+  const dragOver = (e: React.DragEvent, key: string) => {
+    if (!dragEnabled || !e.dataTransfer.types.includes(ROW_MIME)) return;
+    e.preventDefault();
+    setDropOn(key);
   };
 
   return (
@@ -201,10 +275,27 @@ function GroupSection({ group, bundle, items, visible, filtering, members, me, c
             <Dropdown.Trigger asChild><IconButton label={t('groupMenu')}><Ellipsis size={16} /></IconButton></Dropdown.Trigger>
             <Menu>
               <MenuItem onSelect={() => setRenaming(true)} icon={<Pencil size={15} />}>{t('renameGroup')}</MenuItem>
+              {!first && <MenuItem onSelect={() => d.moveGroup(group.id, 'up')} icon={<ArrowUp size={15} />}>{t('moveUp')}</MenuItem>}
+              {!last && <MenuItem onSelect={() => d.moveGroup(group.id, 'down')} icon={<ArrowDown size={15} />}>{t('moveDown')}</MenuItem>}
+              <Dropdown.Sub>
+                <Dropdown.SubTrigger className="flex cursor-pointer items-center gap-2 rounded-xs px-2 py-[6px] text-sm outline-none data-[highlighted]:bg-surface-hover data-[state=open]:bg-surface-hover">
+                  <Palette size={15} />{t('groupColor')}
+                </Dropdown.SubTrigger>
+                <Dropdown.Portal>
+                  <Dropdown.SubContent sideOffset={4} collisionPadding={8} className="z-30 grid grid-cols-4 gap-1 rounded-md border border-border bg-surface-raised p-2 shadow-pop">
+                    {GROUP_COLORS.map((c) => (
+                      <Dropdown.Item key={c} onSelect={() => d.setGroupColor(group.id, c)} aria-label={c}
+                        className={clsx('h-7 w-7 cursor-pointer rounded-pill outline-none data-[highlighted]:ring-2 data-[highlighted]:ring-focus', group.color === c && 'ring-2 ring-text')}
+                        style={{ background: labelBg(c) }} />
+                    ))}
+                  </Dropdown.SubContent>
+                </Dropdown.Portal>
+              </Dropdown.Sub>
               <MenuItem danger onSelect={removeGroup} icon={<Trash2 size={15} />}>{t('deleteGroup')}</MenuItem>
             </Menu>
           </Dropdown.Root>
         )}
+        {canEdit && sorted && <span className="text-xs text-text-subtle">{t('sortedNoDrag')}</span>}
       </div>
 
       {!collapsed && (
@@ -224,15 +315,16 @@ function GroupSection({ group, bundle, items, visible, filtering, members, me, c
               const subs = bundle.items.filter((i) => i.parentItemId === it.id);
               return (
                 <Fragment key={it.id}>
-                  <ItemRow item={it} cols={cols} members={members} me={me} canEdit={canEdit} doneIds={doneIds}
+                  <ItemRow item={it} cols={cols} members={members} me={me} canEdit={canEdit} doneIds={doneIds} groups={groups}
                     subCount={subs.length} subOpen={open.has(it.id)} onToggleSub={() => toggleSub(it.id)}
-                    updates={bundle.updateCounts[it.id] ?? 0} onOpen={onOpen} />
+                    updates={bundle.updateCounts[it.id] ?? 0} onOpen={onOpen} draggable={dragEnabled}
+                    dropping={dropOn === it.id} onDragOverRow={(e) => dragOver(e, it.id)} onDropRow={(e) => dropRow(e, it.id)} onDragLeaveRow={() => setDropOn(null)} />
                   {open.has(it.id) && (
                     <div role="row" className="contents">
                       <div className="sticky start-0 z-[1] bg-[color:var(--g)] opacity-40" />
                       <div className="col-[2/-1] border-b border-s border-border bg-surface py-2 pe-2 ps-8">
                         <div className="sticky start-[36px] w-fit max-w-[calc(100vw-48px)] overflow-x-auto">
-                        <SubitemsTable parent={it} subs={subs} cols={subCols} bundle={bundle} members={members} me={me} canEdit={canEdit} onOpen={onOpen} />
+                          <SubitemsTable parent={it} subs={subs} cols={subCols} bundle={bundle} members={members} me={me} canEdit={canEdit} onOpen={onOpen} />
                         </div>
                       </div>
                     </div>
@@ -244,7 +336,8 @@ function GroupSection({ group, bundle, items, visible, filtering, members, me, c
             {shown.length === 0 && (
               <div role="row" className="contents">
                 <div className="sticky start-0 z-[1] bg-[color:var(--g)]" />
-                <div className="col-[2/-1] flex min-h-row items-center border-b border-border px-3 text-sm text-text-muted">
+                <div className={clsx('col-[2/-1] flex min-h-row items-center border-b border-border px-3 text-sm text-text-muted', dropOn === 'end' && 'bg-surface-selected')}
+                  onDragOver={(e) => dragOver(e, 'end')} onDragLeave={() => setDropOn(null)} onDrop={(e) => dropRow(e, null)}>
                   {filtering ? t('emptyFilter') : t('emptyGroup')}
                 </div>
               </div>
@@ -253,7 +346,8 @@ function GroupSection({ group, bundle, items, visible, filtering, members, me, c
             {canEdit && (
               <div role="row" className="contents">
                 <div className="sticky start-0 z-[1] bg-[color:var(--g)] opacity-50" />
-                <div className="col-[2/-1] flex min-h-row items-center border-b border-border px-3">
+                <div className={clsx('col-[2/-1] flex min-h-row items-center border-b border-border px-3', dropOn === 'end' && 'bg-surface-selected')}
+                  onDragOver={(e) => dragOver(e, 'end')} onDragLeave={() => setDropOn(null)} onDrop={(e) => dropRow(e, null)}>
                   <AddItemInput boardId={bundle.board.id} groupId={group.id} placeholder={`${t('addItem')} ${bundle.board.itemNoun}`} inputRef={addRef} />
                 </div>
               </div>
@@ -305,9 +399,11 @@ function StatusDist({ col, items }: { col: Column; items: Item[] }) {
   );
 }
 
-function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen, onToggleSub, updates, onOpen }: {
+function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen, onToggleSub, updates, onOpen, groups, draggable, dropping, onDragOverRow, onDropRow, onDragLeaveRow }: {
   item: Item; cols: Column[]; members: Profile[]; me: Profile | null; canEdit: boolean; doneIds: Set<string>;
   subCount: number; subOpen: boolean; onToggleSub: () => void; updates: number; onOpen: (id: string) => void;
+  groups: Group[]; draggable: boolean; dropping: boolean;
+  onDragOverRow: (e: React.DragEvent) => void; onDropRow: (e: React.DragEvent) => void; onDragLeaveRow: () => void;
 }) {
   const { t } = useLang();
   const d = useData();
@@ -323,7 +419,15 @@ function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen,
   return (
     <div role="row" className="group/row contents">
       <div className="sticky start-0 z-[1] bg-[color:var(--g)]" />
-      <div role="gridcell" className="sticky start-[4px] z-[1] flex min-h-row min-w-0 items-center gap-1 border-b border-s border-border bg-bg pe-1 ps-1 text-sm group-hover/row:bg-surface-hover">
+      <div role="gridcell" onDragOver={onDragOverRow} onDrop={onDropRow} onDragLeave={onDragLeaveRow}
+        className={clsx('sticky start-[4px] z-[1] flex min-h-row min-w-0 items-center gap-1 border-b border-s border-border bg-bg pe-1 ps-1 text-sm group-hover/row:bg-surface-hover',
+          dropping && 'shadow-[inset_0_2px_0_var(--c-accent)]')}>
+        {draggable && (
+          <span draggable aria-hidden title={t('dragToMove')} onDragStart={(e) => { e.dataTransfer.setData(ROW_MIME, item.id); e.dataTransfer.effectAllowed = 'move'; }}
+            className="hidden h-7 w-4 flex-none cursor-grab place-items-center text-text-subtle opacity-0 group-hover/row:opacity-100 sm:grid">
+            <GripVertical size={14} />
+          </span>
+        )}
         <IconButton small label={subOpen ? t('hideSubitems') : t('showSubitems')} onClick={onToggleSub} aria-expanded={subOpen}
           className={clsx('flex-none', !subCount && !subOpen && 'opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100')}>
           <ChevronLeft size={15} className={clsx('transition-transform duration-base ltr:rotate-180', subOpen && '-rotate-90 ltr:rotate-90')} />
@@ -349,6 +453,20 @@ function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen,
             <Menu>
               <MenuItem onSelect={() => onOpen(item.id)} icon={<Maximize2 size={15} />}>{t('openItem')}</MenuItem>
               <MenuItem onSelect={() => setRenaming(true)} icon={<Pencil size={15} />}>{t('rename')}</MenuItem>
+              {groups.length > 1 && (
+                <Dropdown.Sub>
+                  <Dropdown.SubTrigger className="flex cursor-pointer items-center gap-2 rounded-xs px-2 py-[6px] text-sm outline-none data-[highlighted]:bg-surface-hover data-[state=open]:bg-surface-hover">
+                    <FolderInput size={15} />{t('moveToGroup')}
+                  </Dropdown.SubTrigger>
+                  <Dropdown.Portal>
+                    <Dropdown.SubContent sideOffset={4} collisionPadding={8} className="z-30 min-w-[180px] rounded-md border border-border bg-surface-raised p-1 shadow-pop">
+                      {groups.filter((g) => g.id !== item.groupId).map((g) => (
+                        <MenuItem key={g.id} onSelect={() => d.moveItem(item.id, { groupId: g.id })} icon={<span className="h-3 w-3 rounded-pill" style={{ background: labelBg(g.color) }} />}>{g.title}</MenuItem>
+                      ))}
+                    </Dropdown.SubContent>
+                  </Dropdown.Portal>
+                </Dropdown.Sub>
+              )}
               <MenuItem danger onSelect={remove} icon={<Trash2 size={15} />}>{t('deleteItem')}</MenuItem>
             </Menu>
           </Dropdown.Root>
@@ -540,16 +658,20 @@ function MenuItem({ children, onSelect, icon, danger }: { children: React.ReactN
 
 // ---------------------------------------------------------------- kanban
 
-function KanbanView({ bundle, visible, members, canEdit, onOpen }: { bundle: BoardBundle; visible: (i: Item) => boolean; members: Profile[]; canEdit: boolean; onOpen: (id: string) => void }) {
+function KanbanView({ bundle, items: shownItems, members, canEdit, onOpen, statusColumnId, onStatusColumn }: {
+  bundle: BoardBundle; items: Item[]; members: Profile[]; canEdit: boolean; onOpen: (id: string) => void;
+  statusColumnId?: string; onStatusColumn: (id: string) => void;
+}) {
   const { t, locale } = useLang();
   const setCell = useCellSetter();
-  const status = bundle.columns.find((c) => c.type === 'status');
+  const statusCols = bundle.columns.filter((c) => c.scope === 'item' && c.type === 'status');
+  const status = statusCols.find((c) => c.id === statusColumnId) ?? statusCols[0];
   const people = bundle.columns.find((c) => c.type === 'people');
   const date = bundle.columns.find((c) => c.type === 'date');
   const [over, setOver] = useState<string | null>(null);
   if (!status) return <p className="text-text-muted">—</p>;
   const labels = status.settings.labels ?? [];
-  const items = bundle.items.filter((i) => i.parentItemId === null && visible(i));
+  const items = shownItems;
   const lanes = [...labels.map((l) => ({ id: l.id, name: l.name, color: l.color })), { id: '', name: '—', color: 'empty' as const }];
 
   return (

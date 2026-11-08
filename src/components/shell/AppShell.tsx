@@ -1,7 +1,7 @@
 'use client';
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import clsx from 'clsx';
-import { Bell, CalendarCheck, House, LayoutGrid, LogOut, Menu as MenuIcon, Moon, Languages, Plus, Search, X } from 'lucide-react';
+import { Bell, CalendarCheck, FolderPlus, House, LayoutGrid, LogOut, Menu as MenuIcon, Moon, Languages, Pencil, Plus, Search, X } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useBoards, useData, useMe, useMembers, useWorkspaces } from '@/lib/data/context';
 import type { Profile, Workspace } from '@/lib/data/types';
@@ -119,6 +119,7 @@ function Sidebar() {
       <NavButton active={route.name === 'mywork'} onClick={() => go({ name: 'mywork' })} icon={<CalendarCheck size={16} />}>{t('myWork')}</NavButton>
       <NavButton active={route.name === 'inbox'} onClick={() => go({ name: 'inbox' })} icon={<Bell size={16} />} hint={<UnreadBadge />}>{t('inbox')}</NavButton>
       {workspaces.map((w) => <WorkspaceSection key={w.id} ws={w} />)}
+      <NewWorkspace />
     </nav>
   );
 }
@@ -137,11 +138,19 @@ function WorkspaceSection({ ws }: { ws: Workspace }) {
   const { data: boards = [] } = useBoards(ws.id);
   const { route, go } = useRouter();
   const [adding, setAdding] = useState(false);
-  const canEdit = me && me.role !== 'viewer';
+  const [renaming, setRenaming] = useState(false);
+  const canEdit = me && me.role !== 'viewer' && me.role !== 'guest';
   return (
     <div className="mt-3">
       <div className="flex items-center justify-between ps-[10px] text-xs text-text-subtle">
-        <span>{ws.name}</span>
+        {renaming ? (
+          <input autoFocus defaultValue={ws.name} aria-label={t('renameWorkspace')} className="h-7 w-full rounded-xs border border-focus bg-bg px-1 text-sm text-text"
+            onBlur={(e) => { setRenaming(false); d.renameWorkspace(ws.id, e.target.value); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(false); }} />
+        ) : canEdit ? (
+          <button type="button" onDoubleClick={() => setRenaming(true)} title={t('renameWorkspace')} className="truncate text-start">{ws.name}</button>
+        ) : <span>{ws.name}</span>}
+        {canEdit && !renaming && <IconButton small label={`${t('renameWorkspace')}: ${ws.name}`} onClick={() => setRenaming(true)} className="ms-auto"><Pencil size={12} /></IconButton>}
         {canEdit && <IconButton label={`${t('newBoard')}: ${ws.name}`} small onClick={() => setAdding(true)}><Plus size={14} /></IconButton>}
       </div>
       {boards.map((b) => (
@@ -262,5 +271,31 @@ function BellButton() {
       <Bell size={18} />
       {n > 0 && <span className="absolute end-[2px] top-[2px] grid h-4 min-w-4 place-items-center rounded-pill bg-danger px-[3px] text-[10px] font-semibold tabular-nums text-on-accent">{n}</span>}
     </IconButton>
+  );
+}
+
+function NewWorkspace() {
+  const { t } = useLang();
+  const d = useData();
+  const { data: me } = useMe();
+  const [adding, setAdding] = useState(false);
+  if (!me || me.role === 'viewer' || me.role === 'guest') return null;
+  if (adding) {
+    return (
+      <form className="mt-3 px-2" onSubmit={async (e) => {
+        e.preventDefault();
+        const name = String(new FormData(e.currentTarget).get('name') ?? '');
+        setAdding(false);
+        if (name.trim()) await d.createWorkspace(name);
+      }}>
+        <input name="name" autoFocus aria-label={t('workspaceName')} placeholder={t('workspaceName')} onBlur={() => setAdding(false)}
+          className="h-8 w-full rounded-sm border border-focus bg-bg px-2 text-sm" />
+      </form>
+    );
+  }
+  return (
+    <button type="button" onClick={() => setAdding(true)} className="mt-4 flex h-8 items-center gap-2 rounded-sm px-[10px] text-sm text-text-muted hover:bg-surface-hover">
+      <FolderPlus size={16} />{t('newWorkspace')}
+    </button>
   );
 }

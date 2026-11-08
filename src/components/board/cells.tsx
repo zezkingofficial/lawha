@@ -3,7 +3,7 @@ import * as Popover from '@radix-ui/react-popover';
 import clsx from 'clsx';
 import { Check, ExternalLink, FileText, Paperclip, Pencil, Plus, UserRound, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { CellValue, CheckboxValue, Column, DateValue, DropdownValue, EmailValue, FilesValue, Item, LinkValue, NumbersValue, PeopleValue, PhoneValue, Profile, StatusValue, TextValue, TimelineValue } from '@/lib/data/types';
+import type { CellValue, CheckboxValue, Column, LabelColor, StatusLabel, DateValue, DropdownValue, EmailValue, FilesValue, Item, LinkValue, NumbersValue, PeopleValue, PhoneValue, Profile, StatusValue, TextValue, TimelineValue } from '@/lib/data/types';
 import { useAssets, useData } from '@/lib/data/context';
 import { readFile } from '@/lib/files';
 import { fmtDate, fmtNumber, labelBg, labelFg, todayISO } from '@/lib/format';
@@ -39,6 +39,7 @@ function Pop({ trigger, children, label, open, onOpenChange, width = 260 }: { tr
 export function StatusCell({ item, column, canEdit, onSet }: CellProps) {
   const { t } = useLang();
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const labels = column.settings.labels ?? [];
   const v = item.vals[column.id] as StatusValue | undefined;
   const cur = labels.find((l) => l.id === v?.label_id);
@@ -56,33 +57,85 @@ export function StatusCell({ item, column, canEdit, onSet }: CellProps) {
   );
   if (!canEdit) return pill;
   return (
-    <Pop label={column.title} trigger={pill} open={open} onOpenChange={setOpen}>
-      <div className="grid grid-cols-2 gap-[6px]" onKeyDown={(e) => {
-        const n = Number(e.key);
-        if (n >= 1 && n <= labels.length) { onSet({ label_id: labels[n - 1].id }); setOpen(false); }
-      }}>
-        {labels.map((l, i) => (
-          <button
-            key={l.id}
-            type="button"
-            autoFocus={l.id === cur?.id || (!cur && i === 0)}
-            className="min-h-8 rounded-xs px-2 text-sm font-medium"
-            style={{ background: labelBg(l.color), color: labelFg(l.color) }}
-            onClick={() => { onSet({ label_id: l.id }); setOpen(false); }}
-          >
-            {l.name}
+    <Pop label={editing ? t('labels') : column.title} trigger={pill} open={open} onOpenChange={(o) => { setOpen(o); if (!o) setEditing(false); }} width={editing ? 300 : 260}>
+      {editing ? <LabelEditor column={column} onBack={() => setEditing(false)} /> : (
+        <div className="grid grid-cols-2 gap-[6px]" onKeyDown={(e) => {
+          const n = Number(e.key);
+          if (n >= 1 && n <= labels.length) { onSet({ label_id: labels[n - 1].id }); setOpen(false); }
+        }}>
+          {labels.map((l, i) => (
+            <button
+              key={l.id}
+              type="button"
+              autoFocus={l.id === cur?.id || (!cur && i === 0)}
+              className="min-h-8 rounded-xs px-2 text-sm font-medium"
+              style={{ background: labelBg(l.color), color: labelFg(l.color) }}
+              onClick={() => { onSet({ label_id: l.id }); setOpen(false); }}
+            >
+              {l.name}
+            </button>
+          ))}
+          {cur && (
+            <button type="button" className="col-span-2 flex items-center justify-center gap-1 rounded-xs py-1 text-sm text-text-muted hover:bg-surface-hover" onClick={() => { onSet(null); setOpen(false); }}>
+              <X size={14} />{t('clear')}
+            </button>
+          )}
+          <button type="button" onClick={() => setEditing(true)} className="col-span-2 flex items-center justify-center gap-1 border-t border-border pt-2 text-sm text-accent">
+            <Pencil size={14} />{t('editLabels')}
           </button>
-        ))}
-        {cur && (
-          <button type="button" className="col-span-2 flex items-center justify-center gap-1 rounded-xs py-1 text-sm text-text-muted hover:bg-surface-hover" onClick={() => { onSet(null); setOpen(false); }}>
-            <X size={14} />{t('clear')}
-          </button>
-        )}
-        <button type="button" disabled title={t('soon')} className="col-span-2 flex items-center justify-center gap-1 border-t border-border pt-2 text-sm text-accent opacity-60">
-          <Pencil size={14} />{t('editLabels')}
-        </button>
-      </div>
+        </div>
+      )}
     </Pop>
+  );
+}
+
+const LABEL_COLORS: LabelColor[] = ['green', 'orange', 'red', 'blue', 'purple', 'teal', 'pink', 'navy', 'brown', 'grey', 'yellow', 'lime'];
+
+// S09: rename, recolour, mark as done, add and delete labels. Deleting a label
+// clears it from every item (the data layer does that), so no value points nowhere.
+function LabelEditor({ column, onBack }: { column: Column; onBack: () => void }) {
+  const { t } = useLang();
+  const d = useData();
+  const labels = column.settings.labels ?? [];
+  const [picking, setPicking] = useState<string | null>(null);
+  const save = (next: StatusLabel[]) => d.updateColumnSettings(column.id, { labels: next });
+  const patch = (id: string, p: Partial<StatusLabel>) => save(labels.map((l) => (l.id === id ? { ...l, ...p } : l)));
+  return (
+    <div className="grid gap-2">
+      <ul className="grid gap-1">
+        {labels.map((l) => (
+          <li key={l.id} className="grid gap-1">
+            <div className="flex items-center gap-1">
+              <button type="button" aria-label={`${t('groupColor')}: ${l.name}`} onClick={() => setPicking(picking === l.id ? null : l.id)}
+                className="h-7 w-7 flex-none rounded-xs" style={{ background: labelBg(l.color) }} />
+              <input defaultValue={l.name} aria-label={t('labelName')} className="h-7 min-w-0 flex-1 rounded-xs border border-border-input bg-bg px-2 text-sm"
+                onBlur={(e) => { const n = e.target.value.trim(); if (n && n !== l.name) patch(l.id, { name: n.slice(0, 40) }); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
+              <label className="flex flex-none items-center gap-1 text-xs text-text-muted" title={t('doneLabel')}>
+                <input type="checkbox" checked={l.done} onChange={(e) => patch(l.id, { done: e.target.checked })} className="h-4 w-4 accent-[color:var(--c-accent)]" />
+                <Check size={12} />
+              </label>
+              <button type="button" aria-label={`${t('deleteLabel')}: ${l.name}`} disabled={labels.length <= 1} onClick={() => save(labels.filter((x) => x.id !== l.id))}
+                className="grid h-7 w-7 flex-none place-items-center rounded-xs text-text-muted hover:bg-surface-hover hover:text-danger disabled:opacity-40"><X size={14} /></button>
+            </div>
+            {picking === l.id && (
+              <div className="grid grid-cols-6 gap-1 ps-8">
+                {LABEL_COLORS.map((c) => (
+                  <button key={c} type="button" aria-label={c} onClick={() => { patch(l.id, { color: c }); setPicking(null); }}
+                    className={clsx('h-6 w-6 rounded-pill', l.color === c && 'ring-2 ring-text')} style={{ background: labelBg(c) }} />
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      <button type="button" disabled={labels.length >= 40} className="text-start text-sm text-accent disabled:opacity-50" onClick={() => {
+        const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? crypto.randomUUID() : String(Date.now());
+        save([...labels, { id, name: t('labelName'), color: LABEL_COLORS[labels.length % LABEL_COLORS.length], done: false }]);
+      }}>{t('addLabel')}</button>
+      <p className="text-xs text-text-subtle"><Check size={11} className="inline" /> = {t('doneLabel')}</p>
+      <button type="button" onClick={onBack} className="border-t border-border pt-2 text-sm text-text-muted hover:text-text">{t('back')}</button>
+    </div>
   );
 }
 

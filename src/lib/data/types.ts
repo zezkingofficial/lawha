@@ -172,12 +172,44 @@ export interface MyWorkRow {
 
 export interface NewFile { name: string; type: string; size: number; dataUrl: string }
 
+export type ViewType = 'table' | 'kanban' | 'calendar';
+export type FilterOp = 'any_of' | 'none_of' | 'empty' | 'not_empty' | 'contains' | 'gt' | 'lt' | 'before' | 'after';
+
+export interface Filter { columnId: string; op: FilterOp; values?: string[] }
+
+export interface ViewSettings {
+  filters: Filter[];
+  sort: { columnId: string; dir: 'asc' | 'desc' } | null; // columnId 'name' sorts by item name
+  hiddenColumnIds: string[];
+  personId: string | null;   // "show items assigned to this person"
+  kanbanColumnId?: string;   // status column that makes the lanes
+  dateColumnId?: string;     // date or timeline column for the calendar
+}
+
+export interface View {
+  id: string;
+  boardId: string;
+  type: ViewType;
+  name: string;
+  settings: ViewSettings;
+  ownerId: string | null;    // null = shared with everyone on the board
+  isMain: boolean;
+  position: string;
+}
+
+export type BoardRole = 'owner' | 'editor' | 'viewer';
+export interface BoardMember { boardId: string; userId: string; role: BoardRole }
+
 export interface BoardBundle {
   board: Board;
   groups: Group[];   // ordered by position, deleted excluded
   columns: Column[]; // ordered by position
   items: Item[];     // ordered by position, deleted excluded
   updateCounts: Record<string, number>; // item id -> number of updates (replies included)
+  views: View[];                        // shared views + my own, ordered
+  members: BoardMember[];
+  canEdit: boolean;                     // can I change items and structure here
+  canAdmin: boolean;                    // can I change sharing and board settings
 }
 
 export interface Place {
@@ -200,11 +232,24 @@ export interface DataLayer {
   getBoard(boardId: string): Promise<BoardBundle | null>;
   createBoard(workspaceId: string, name: string): Promise<Board>;
   renameBoard(boardId: string, name: string): Promise<void>;
+  createWorkspace(name: string): Promise<Workspace>;
+  renameWorkspace(workspaceId: string, name: string): Promise<void>;
+
+  // sharing (board_members + boards.kind)
+  setBoardKind(boardId: string, kind: Board['kind']): Promise<void>;
+  setBoardMember(boardId: string, userId: string, role: BoardRole | null): Promise<void>;
+
+  // saved views
+  createView(boardId: string, type: ViewType, name: string): Promise<View>;
+  updateView(viewId: string, patch: { name?: string; settings?: Partial<ViewSettings> }): Promise<void>;
+  deleteView(viewId: string): Promise<void>;
 
   createGroup(boardId: string, title: string): Promise<Group>;
   renameGroup(groupId: string, title: string): Promise<void>;
   deleteGroup(groupId: string): Promise<void>;
   restoreGroup(groupId: string): Promise<void>;
+  moveGroup(groupId: string, dir: 'up' | 'down'): Promise<void>;
+  setGroupColor(groupId: string, color: LabelColor): Promise<void>;
 
   // items
   createItem(boardId: string, name: string, place: Place): Promise<Item>;

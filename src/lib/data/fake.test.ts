@@ -163,3 +163,77 @@ describe('collaboration and personal views', () => {
     expect((await d.activity('i-1'))[0]).toMatchObject({ action: 'cell_changed', columnId: 'c-o-status', after: { label_id: 'ready' } });
   });
 });
+
+describe('sharing, views and structure', () => {
+  it('scopes a guest to boards shared with them, and only those workspaces', async () => {
+    const d = await signedIn('u-guest');
+    expect((await d.workspaces()).map((w) => w.id)).toEqual(['ws-factory']);
+    expect((await d.boards('ws-factory')).map((b) => b.id)).toEqual(['b-delivery']);
+    expect(await d.getBoard('b-orders')).toBeNull();
+    await expect(d.setCell('i-1', 'c-o-status', { label_id: 'done' })).rejects.toBeInstanceOf(NotAllowed);
+    const b = await d.getBoard('b-delivery');
+    expect(b?.canEdit).toBe(true);
+    expect(b?.canAdmin).toBe(false);
+    await expect(d.createBoard('ws-factory', 'x')).rejects.toBeInstanceOf(NotAllowed);
+  });
+
+  it('hides private boards from members who are not on them', async () => {
+    const d = await signedIn('u-ahmed');
+    await d.setBoardKind('b-leads', 'private');
+    await d.signIn('u-sara');
+    expect((await d.boards('ws-sales')).length).toBe(0);
+    await d.signIn('u-ahmed');
+    await d.setBoardMember('b-leads', 'u-sara', 'viewer');
+    await d.signIn('u-sara');
+    const b = await d.getBoard('b-leads');
+    expect(b?.canEdit).toBe(false);
+  });
+
+  it('only owners or admins change sharing, and a board keeps one owner', async () => {
+    const d = await signedIn('u-sara');
+    await expect(d.setBoardKind('b-orders', 'private')).rejects.toBeInstanceOf(NotAllowed);
+    await d.signIn('u-ahmed');
+    await expect(d.setBoardMember('b-orders', 'u-ahmed', null)).rejects.toThrow('owner');
+  });
+
+  it('saves view settings and keeps viewers views personal', async () => {
+    const d = await signedIn('u-ahmed');
+    const b0 = (await d.getBoard('b-orders'))!;
+    expect(b0.views.map((v) => v.type)).toEqual(['table', 'kanban', 'calendar']);
+    await d.updateView(b0.views[0].id, { settings: { filters: [{ columnId: 'c-o-status', op: 'any_of', values: ['stuck'] }], hiddenColumnIds: ['c-o-notes'] } });
+    expect((await d.getBoard('b-orders'))!.views[0].settings.filters).toHaveLength(1);
+    await d.signIn('u-yousef');
+    await expect(d.updateView(b0.views[0].id, { name: 'x' })).rejects.toBeInstanceOf(NotAllowed);
+    const mine = await d.createView('b-orders', 'table', 'عرضي');
+    expect(mine.ownerId).toBe('u-yousef');
+    await d.updateView(mine.id, { settings: { personId: 'u-sara' } });
+    await d.signIn('u-ahmed');
+    expect((await d.getBoard('b-orders'))!.views.some((v) => v.id === mine.id)).toBe(false);
+  });
+
+  it('moves and recolours groups', async () => {
+    const d = await signedIn();
+    await d.moveGroup('g-ready', 'up');
+    expect((await d.getBoard('b-orders'))!.groups.map((g) => g.id)).toEqual(['g-ready', 'g-nov']);
+    await d.setGroupColor('g-nov', 'pink');
+    expect((await d.getBoard('b-orders'))!.groups.find((g) => g.id === 'g-nov')?.color).toBe('pink');
+  });
+
+  it('removing a status label or dropdown option clears values that used it', async () => {
+    const d = await signedIn();
+    const col = (await d.getBoard('b-orders'))!.columns.find((c) => c.id === 'c-o-status')!;
+    await d.updateColumnSettings(col.id, { labels: col.settings.labels!.filter((l) => l.id !== 'stuck') });
+    expect((await d.getBoard('b-orders'))!.items.find((i) => i.id === 'i-3')!.vals['c-o-status']).toBeUndefined();
+    const dd = (await d.getBoard('b-orders'))!.columns.find((c) => c.id === 'c-o-type')!;
+    await d.updateColumnSettings(dd.id, { options: dd.settings.options!.filter((o) => o.id !== 'lid') });
+    expect((await d.getBoard('b-orders'))!.items.find((i) => i.id === 'i-1')!.vals['c-o-type']).toBeUndefined();
+    await expect(d.updateColumnSettings(col.id, { labels: [] })).rejects.toThrow('at least one');
+  });
+
+  it('creates and renames a workspace', async () => {
+    const d = await signedIn();
+    const w = await d.createWorkspace('العطور');
+    await d.renameWorkspace(w.id, 'براند هيبة');
+    expect((await d.workspaces()).find((x) => x.id === w.id)?.name).toBe('براند هيبة');
+  });
+});

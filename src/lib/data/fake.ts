@@ -1,7 +1,7 @@
 import { generateKeyBetween } from 'fractional-indexing';
-import { makeSeed, DEFAULT_LABELS, DB_VERSION, type DB } from './seed';
+import { makeSeed, DEFAULT_LABELS, DB_VERSION, emptySettings, type DB } from './seed';
 import { validateCell } from './validate';
-import type { ActivityEntry, Asset, Board, BoardBundle, CellValue, Column, ColumnType, DataLayer, Group, Item, MyWorkRow, NewFile, NotificationKind, Place, Profile, StatusValue, Update } from './types';
+import type { ActivityEntry, Asset, Board, BoardBundle, View, Workspace, CellValue, Column, ColumnType, DataLayer, Group, Item, MyWorkRow, NewFile, NotificationKind, Place, Profile, StatusValue, Update } from './types';
 
 // In-browser stand-in for Supabase, used until replica-backend. Same function
 // signatures as the real layer. Data lives in localStorage; changes reach other
@@ -47,6 +47,29 @@ export function createFakeLayer(persist: Persist): DataLayer {
     const m = me();
     if (!m) throw new NotAllowed('not signed in');
     if (m.role === 'viewer') throw new NotAllowed('view only');
+  };
+  // mirrors app.can_read_board / app.can_edit_board / app.can_admin_board in schema.sql
+  const memberRole = (boardId: string) => db.boardMembers.find((m) => m.boardId === boardId && m.userId === meId)?.role ?? null;
+  const canReadBoard = (b: Board) => {
+    const m = me();
+    if (!m || b.deletedAt) return false;
+    if (memberRole(b.id)) return true;
+    return m.role !== 'guest' && b.kind !== 'private';
+  };
+  const canEditBoard = (b: Board) => {
+    const m = me();
+    if (!m || !canReadBoard(b) || m.role === 'viewer') return false;
+    return (memberRole(b.id) ?? 'editor') !== 'viewer';
+  };
+  const canAdminBoard = (b: Board) => me()?.role === 'admin' || memberRole(b.id) === 'owner' || b.createdBy === meId;
+  const board = (id: string) => {
+    const b = db.boards.find((x) => x.id === id);
+    if (!b) throw new Error('board not found');
+    return b;
+  };
+  const guard = (boardId: string) => {
+    canEdit();
+    if (!canEditBoard(board(boardId))) throw new NotAllowed('no edit access to this board');
   };
   const item = (id: string) => {
     const it = db.items.find((i) => i.id === id);
@@ -109,13 +132,21 @@ export function createFakeLayer(persist: Persist): DataLayer {
     async members() { return db.members; },
     async account() { return db.account; },
 
-    async workspaces() { return [...db.workspaces].sort(byPos); },
-    async boards(workspaceId) { return db.boards.filter((b) => b.workspaceId === workspaceId && !b.deletedAt).sort(byPos); },
+    async workspaces() {
+      // guests only see workspaces that hold a board shared with them
+      if (me()?.role === 'guest') return db.workspaces.filter((w) => db.boards.some((b) => b.workspaceId === w.id && canReadBoard(b))).sort(byPos);
+      return [...db.workspaces].sort(byPos);
+    },
+    async boards(workspaceId) { return db.boards.filter((b) => b.workspaceId === workspaceId && canReadBoard(b)).sort(byPos); },
     async getBoard(boardId): Promise<BoardBundle | null> {
       const board = db.boards.find((b) => b.id === boardId && !b.deletedAt);
-      if (!board) return null;
+      if (!board || !canReadBoard(board)) return null;
       return {
         board,
+        views: db.views.filter((v) => v.boardId === boardId && (v.ownerId === null || v.ownerId === meId)).sort(byPos),
+        members: db.boardMembers.filter((m) => m.boardId === boardId),
+        canEdit: canEditBoard(board),
+        canAdmin: canAdminBoard(board),
         groups: db.groups.filter((g) => g.boardId === boardId && !g.deletedAt).sort(byPos),
         columns: db.columns.filter((c) => c.boardId === boardId).sort(byPos),
         items: db.items.filter((i) => i.boardId === boardId && !i.deletedAt).sort(byPos),
@@ -124,6 +155,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
     },
     async createBoard(workspaceId, name) {
       canEdit();
+      if (me()?.role === 'guest') throw new NotAllowed('guests cannot create boards');
       const last = db.boards.filter((b) => b.workspaceId === workspaceId).sort(byPos).at(-1);
       const b: Board = {
         id: uid(), accountId: db.account.id, workspaceId, name: name.trim() || 'لوحة جديدة', description: '',
@@ -139,11 +171,16 @@ export function createFakeLayer(persist: Persist): DataLayer {
         { id: uid(), boardId: b.id, scope: 'item', title: 'الحالة', type: 'status', settings: { labels: DEFAULT_LABELS }, position: k1b, width: 150 },
         { id: uid(), boardId: b.id, scope: 'item', title: 'التاريخ', type: 'date', settings: {}, position: k2b, width: 120 },
       );
+      db.boardMembers.push({ boardId: b.id, userId: meId!, role: 'owner' });
+      db.views.push(
+        { id: uid(), boardId: b.id, type: 'table', name: 'الجدول الرئيسي', settings: emptySettings(), ownerId: null, isMain: true, position: k0 },
+        { id: uid(), boardId: b.id, type: 'kanban', name: 'كانبان', settings: emptySettings(), ownerId: null, isMain: false, position: k1b },
+      );
       commit([b.id]);
       return b;
     },
     async renameBoard(boardId, name) {
-      canEdit();
+      guard(boardId);
       const b = db.boards.find((x) => x.id === boardId);
       if (!b || !name.trim()) return;
       b.name = name.trim();
@@ -151,7 +188,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
     },
 
     async createGroup(boardId, title) {
-      canEdit();
+      guard(boardId);
       const first = db.groups.filter((g) => g.boardId === boardId && !g.deletedAt).sort(byPos)[0];
       const colors: Group['color'][] = ['purple', 'teal', 'orange', 'pink', 'navy', 'brown'];
       const g: Group = {
@@ -165,6 +202,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
     async renameGroup(groupId, title) {
       canEdit();
       const g = db.groups.find((x) => x.id === groupId);
+      if (g) guard(g.boardId);
       if (!g || !title.trim()) return;
       g.title = title.trim();
       commit([g.boardId]);
@@ -172,6 +210,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
     async deleteGroup(groupId) {
       canEdit();
       const g = db.groups.find((x) => x.id === groupId);
+      if (g) guard(g.boardId);
       if (!g) return;
       g.deletedAt = now();
       commit([g.boardId]);
@@ -179,13 +218,14 @@ export function createFakeLayer(persist: Persist): DataLayer {
     async restoreGroup(groupId) {
       canEdit();
       const g = db.groups.find((x) => x.id === groupId);
+      if (g) guard(g.boardId);
       if (!g) return;
       g.deletedAt = null;
       commit([g.boardId]);
     },
 
     async createItem(boardId, name, place) {
-      canEdit();
+      guard(boardId);
       const clean = name.trim();
       if (!clean) throw new Error('name required');
       if (clean.length > 500) throw new Error('name too long');
@@ -200,8 +240,8 @@ export function createFakeLayer(persist: Persist): DataLayer {
       return it;
     },
     async renameItem(itemId, name) {
-      canEdit();
       const it = item(itemId);
+      guard(it.boardId);
       const clean = name.trim();
       if (!clean || clean === it.name) return;
       log(it, 'name_changed', null, it.name, clean.slice(0, 500));
@@ -210,8 +250,8 @@ export function createFakeLayer(persist: Persist): DataLayer {
       commit([it.boardId]);
     },
     async setCell(itemId, columnId, value: CellValue | null) {
-      canEdit();
       const it = item(itemId);
+      guard(it.boardId);
       const col = db.columns.find((c) => c.id === columnId && c.boardId === it.boardId);
       if (!col) throw new Error('column not found');
       validateCell(col, value);
@@ -233,8 +273,8 @@ export function createFakeLayer(persist: Persist): DataLayer {
       return it;
     },
     async moveItem(itemId, place) {
-      canEdit();
       const it = item(itemId);
+      guard(it.boardId);
       if (it.groupId !== place.groupId) log(it, 'item_moved', null, it.groupId, place.groupId);
       it.position = keyFor(it.boardId, place, itemId);
       it.groupId = place.groupId;
@@ -242,15 +282,15 @@ export function createFakeLayer(persist: Persist): DataLayer {
       commit([it.boardId]);
     },
     async deleteItem(itemId) {
-      canEdit();
       const it = item(itemId);
+      guard(it.boardId);
       it.deletedAt = now();
       log(it, 'item_deleted');
       commit([it.boardId]);
     },
     async restoreItem(itemId) {
-      canEdit();
       const it = item(itemId);
+      guard(it.boardId);
       it.deletedAt = null;
       log(it, 'item_restored');
       commit([it.boardId]);
@@ -258,7 +298,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
 
     // ---- columns
     async createColumn(boardId, type, title, scope = 'item') {
-      canEdit();
+      guard(boardId);
       const last = db.columns.filter((c) => c.boardId === boardId && c.scope === scope).sort(byPos).at(-1);
       const c: Column = { id: uid(), boardId, scope, title: title.trim().slice(0, 120) || type, type, settings: defaultSettings(type), position: generateKeyBetween(last?.position ?? null, null), width: defaultWidth(type) };
       db.columns.push(c);
@@ -269,6 +309,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
       canEdit();
       const c = db.columns.find((x) => x.id === columnId);
       if (!c || !title.trim()) return;
+      guard(c.boardId);
       c.title = title.trim().slice(0, 120);
       commit([c.boardId]);
     },
@@ -276,6 +317,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
       canEdit();
       const c = db.columns.find((x) => x.id === columnId);
       if (!c) return;
+      guard(c.boardId);
       db.columns = db.columns.filter((x) => x.id !== columnId);
       for (const it of db.items) if (it.boardId === c.boardId && columnId in it.vals) { const v = { ...it.vals }; delete v[columnId]; it.vals = v; }
       commit([c.boardId]);
@@ -284,14 +326,28 @@ export function createFakeLayer(persist: Persist): DataLayer {
       canEdit();
       const c = db.columns.find((x) => x.id === columnId);
       if (!c) return;
+      guard(c.boardId);
+      if (settings.labels && settings.labels.length === 0) throw new Error('a status column needs at least one label');
       c.settings = { ...c.settings, ...settings };
+      // a removed label or option leaves no orphan values behind
+      const keep = new Set([...(c.settings.labels ?? []).map((l) => l.id), ...(c.settings.options ?? []).map((o) => o.id)]);
+      for (const it of db.items) {
+        if (it.boardId !== c.boardId) continue;
+        const v = it.vals[c.id] as { label_id?: string; option_ids?: string[] } | undefined;
+        if (!v) continue;
+        if (c.type === 'status' && v.label_id && !keep.has(v.label_id)) { const n = { ...it.vals }; delete n[c.id]; it.vals = n; }
+        if (c.type === 'dropdown' && v.option_ids) {
+          const left = v.option_ids.filter((x) => keep.has(x));
+          if (left.length !== v.option_ids.length) { const n = { ...it.vals }; if (left.length) n[c.id] = { option_ids: left }; else delete n[c.id]; it.vals = n; }
+        }
+      }
       commit([c.boardId]);
     },
 
     // ---- subitems
     async createSubitem(parentItemId, name) {
-      canEdit();
       const parent = item(parentItemId);
+      guard(parent.boardId);
       const clean = name.trim();
       if (!clean) throw new Error('name required');
       if (!db.columns.some((c) => c.boardId === parent.boardId && c.scope === 'subitem')) {
@@ -320,6 +376,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
       if (!m) throw new NotAllowed('not signed in');
       if (m.role === 'viewer') throw new NotAllowed('view only');
       const it = item(itemId);
+      if (!canReadBoard(board(it.boardId))) throw new NotAllowed('no access');
       const text = bodyText.trim();
       if (!text && !opts.files?.length) throw new Error('empty update');
       const u: Update = { id: uid(), boardId: it.boardId, itemId, parentUpdateId: opts.parentUpdateId ?? null, authorId: meId, bodyText: text.slice(0, 10000), mentionedUserIds: [], assetIds: [], createdAt: now(), editedAt: null };
@@ -357,8 +414,8 @@ export function createFakeLayer(persist: Persist): DataLayer {
       return db.assets.filter((a) => a.itemId === itemId).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
     },
     async uploadToCell(itemId, columnId, file) {
-      canEdit();
       const it = item(itemId);
+      guard(it.boardId);
       const col = db.columns.find((c) => c.id === columnId && c.boardId === it.boardId && c.type === 'files');
       if (!col) throw new Error('not a files column');
       const a = saveFile(it.boardId, itemId, null, file);
@@ -389,7 +446,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
       for (const it of db.items) {
         if (it.deletedAt) continue;
         const board = db.boards.find((b) => b.id === it.boardId && !b.deletedAt);
-        if (!board) continue;
+        if (!board || !canReadBoard(board)) continue;
         if (it.groupId && db.groups.find((g) => g.id === it.groupId)?.deletedAt) continue;
         const cols = db.columns.filter((c) => c.boardId === it.boardId && c.scope === (it.parentItemId ? 'subitem' : 'item'));
         const mine = cols.some((c) => c.type === 'people' && (((it.vals[c.id] as { user_ids?: string[] } | undefined)?.user_ids) ?? []).includes(meId!));
@@ -400,6 +457,91 @@ export function createFakeLayer(persist: Persist): DataLayer {
         rows.push({ item: it, board, date: dateCol ? (it.vals[dateCol.id] as { date: string }).date : null, statusLabel: label, done: !!label?.done });
       }
       return rows.sort((a, b) => (a.date ?? '9999') < (b.date ?? '9999') ? -1 : 1);
+    },
+
+    // ---- workspaces
+    async createWorkspace(name) {
+      canEdit();
+      if (me()?.role === 'guest') throw new NotAllowed('guests cannot create workspaces');
+      const last = [...db.workspaces].sort(byPos).at(-1);
+      const w: Workspace = { id: uid(), accountId: db.account.id, name: name.trim().slice(0, 120) || 'مساحة جديدة', kind: 'open', position: generateKeyBetween(last?.position ?? null, null) };
+      db.workspaces.push(w);
+      commit([]);
+      return w;
+    },
+    async renameWorkspace(workspaceId, name) {
+      canEdit();
+      const w = db.workspaces.find((x) => x.id === workspaceId);
+      if (!w || !name.trim()) return;
+      w.name = name.trim().slice(0, 120);
+      commit([]);
+    },
+
+    // ---- sharing
+    async setBoardKind(boardId, kind) {
+      const b = board(boardId);
+      if (!canAdminBoard(b)) throw new NotAllowed('only the board owner or an admin can change sharing');
+      b.kind = kind;
+      commit([boardId]);
+    },
+    async setBoardMember(boardId, userId, role) {
+      const b = board(boardId);
+      if (!canAdminBoard(b)) throw new NotAllowed('only the board owner or an admin can change sharing');
+      const owners = db.boardMembers.filter((m) => m.boardId === boardId && m.role === 'owner');
+      if (owners.length === 1 && owners[0].userId === userId && role !== 'owner') throw new Error('a board needs at least one owner');
+      db.boardMembers = db.boardMembers.filter((m) => !(m.boardId === boardId && m.userId === userId));
+      if (role) db.boardMembers.push({ boardId, userId, role });
+      commit([boardId]);
+    },
+
+    // ---- views
+    async createView(boardId, type, name) {
+      const b = board(boardId);
+      if (!canReadBoard(b)) throw new NotAllowed('no access');
+      const last = db.views.filter((v) => v.boardId === boardId).sort(byPos).at(-1);
+      // people who cannot edit the board get a personal view; editors share theirs
+      const v: View = { id: uid(), boardId, type, name: name.trim().slice(0, 80) || type, settings: emptySettings(), ownerId: canEditBoard(b) ? null : meId, isMain: false, position: generateKeyBetween(last?.position ?? null, null) };
+      db.views.push(v);
+      commit([boardId]);
+      return v;
+    },
+    async updateView(viewId, patch) {
+      const v = db.views.find((x) => x.id === viewId);
+      if (!v) return;
+      const b = board(v.boardId);
+      if (v.ownerId ? v.ownerId !== meId : !canEditBoard(b)) throw new NotAllowed('cannot change this view');
+      if (patch.name?.trim()) v.name = patch.name.trim().slice(0, 80);
+      if (patch.settings) v.settings = { ...v.settings, ...patch.settings };
+      commit([v.boardId]);
+    },
+    async deleteView(viewId) {
+      const v = db.views.find((x) => x.id === viewId);
+      if (!v || v.isMain) return;
+      const b = board(v.boardId);
+      if (v.ownerId ? v.ownerId !== meId : !canEditBoard(b)) throw new NotAllowed('cannot delete this view');
+      db.views = db.views.filter((x) => x.id !== viewId);
+      commit([v.boardId]);
+    },
+
+    // ---- groups
+    async moveGroup(groupId, dir) {
+      const g = db.groups.find((x) => x.id === groupId);
+      if (!g) return;
+      guard(g.boardId);
+      const list = db.groups.filter((x) => x.boardId === g.boardId && !x.deletedAt).sort(byPos);
+      const i = list.findIndex((x) => x.id === groupId);
+      const j = dir === 'up' ? i - 1 : i + 1;
+      if (j < 0 || j >= list.length) return;
+      const [a, b2] = dir === 'up' ? [list[j - 1], list[j]] : [list[j], list[j + 1]];
+      g.position = generateKeyBetween(a?.position ?? null, b2?.position ?? null);
+      commit([g.boardId]);
+    },
+    async setGroupColor(groupId, color) {
+      const g = db.groups.find((x) => x.id === groupId);
+      if (!g) return;
+      guard(g.boardId);
+      g.color = color;
+      commit([g.boardId]);
     },
 
     subscribe(boardId, onChange) {
@@ -416,7 +558,7 @@ export function createFakeLayer(persist: Persist): DataLayer {
 
 // ---- persistence backends
 
-const KEY = 'lawha:db:v2';
+const KEY = 'lawha:db:v3';
 const ME_KEY = 'lawha:me:v1';
 
 export function browserPersist(): Persist {
