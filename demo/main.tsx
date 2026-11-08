@@ -3,14 +3,12 @@ import { createRoot } from 'react-dom/client';
 import '../src/styles/globals.css';
 import { Providers } from '../src/components/Providers';
 import { LawhaApp } from '../src/components/shell/AppShell';
-import type { Route } from '../src/lib/router';
+import { hashToRoute, routeToHash, type Route } from '../src/lib/router';
 
 // Single-file demo: same screens as the Next.js app, routed on the URL hash
 // (a plain #board-<id>) so it can run as one HTML page.
 function readHash(): Route {
-  const h = location.hash.slice(1);
-  if (h.startsWith('board-')) return { name: 'board', boardId: h.slice(6) };
-  return { name: 'home' };
+  return hashToRoute(location.hash);
 }
 
 function DemoApp() {
@@ -21,7 +19,7 @@ function DemoApp() {
     return () => removeEventListener('hashchange', on);
   }, []);
   const go = (r: Route) => {
-    const h = r.name === 'board' ? `#board-${r.boardId}` : '#home';
+    const h = routeToHash(r);
     if (location.hash !== h) location.hash = h; else setRoute(r);
   };
   return (

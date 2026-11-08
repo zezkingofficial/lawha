@@ -1,9 +1,11 @@
 'use client';
 import * as Popover from '@radix-ui/react-popover';
 import clsx from 'clsx';
-import { Check, Pencil, Plus, UserRound, X } from 'lucide-react';
+import { Check, ExternalLink, FileText, Paperclip, Pencil, Plus, UserRound, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { CellValue, Column, DateValue, Item, NumbersValue, PeopleValue, Profile, StatusValue, TextValue } from '@/lib/data/types';
+import type { CellValue, CheckboxValue, Column, DateValue, DropdownValue, EmailValue, FilesValue, Item, LinkValue, NumbersValue, PeopleValue, PhoneValue, Profile, StatusValue, TextValue, TimelineValue } from '@/lib/data/types';
+import { useAssets, useData } from '@/lib/data/context';
+import { readFile } from '@/lib/files';
 import { fmtDate, fmtNumber, labelBg, labelFg, todayISO } from '@/lib/format';
 import { useLang } from '@/lib/i18n';
 import { Avatar, AvatarStack } from '../ui';
@@ -226,4 +228,284 @@ export function NumbersCell({ item, column, canEdit, onSet, onInvalid }: CellPro
       {v && unit && <span className="text-xs text-text-subtle">{unit}</span>}
     </button>
   );
+}
+
+// ---------- long text
+
+export function LongTextCell({ item, column, canEdit, onSet }: CellProps) {
+  const { t } = useLang();
+  const v = item.vals[column.id] as TextValue | undefined;
+  const [draft, setDraft] = useState(v?.text ?? '');
+  const face = (
+    <button type="button" disabled={!canEdit} title={v?.text} aria-label={`${column.title}: ${v?.text ?? '—'}`}
+      className="h-full min-h-[35px] w-full truncate px-2 text-start text-sm disabled:cursor-default" dir="auto">
+      {v?.text?.split('\n')[0] ?? ''}
+    </button>
+  );
+  if (!canEdit) return face;
+  return (
+    <Pop label={column.title} trigger={face} width={320} onOpenChange={(o) => {
+      if (o) setDraft(v?.text ?? '');
+      else if (draft.trim() !== (v?.text ?? '')) onSet(draft.trim() ? { text: draft.trim() } : null);
+    }}>
+      <textarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} aria-label={column.title} dir="auto" rows={7}
+        className="w-full resize-y rounded-sm border border-border-input bg-bg p-2 text-sm" />
+    </Pop>
+  );
+}
+
+// ---------- dropdown
+
+export function DropdownCell({ item, column, canEdit, onSet }: CellProps) {
+  const { t } = useLang();
+  const d = useData();
+  const [newName, setNewName] = useState('');
+  const options = column.settings.options ?? [];
+  const v = item.vals[column.id] as DropdownValue | undefined;
+  const ids = v?.option_ids ?? [];
+  const chosen = options.filter((o) => ids.includes(o.id));
+  const toggle = (id: string) => {
+    const next = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+    onSet(next.length ? { option_ids: next } : null);
+  };
+  const face = (
+    <button type="button" disabled={!canEdit} aria-label={`${column.title}: ${chosen.map((o) => o.name).join('، ') || '—'}`}
+      className="flex h-full min-h-[35px] w-full items-center justify-center gap-1 overflow-hidden px-1 disabled:cursor-default">
+      {chosen.map((o) => <span key={o.id} className="truncate rounded-xs bg-surface-hover px-[6px] py-[1px] text-xs">{o.name}</span>)}
+    </button>
+  );
+  if (!canEdit) return face;
+  const addOption = async () => {
+    const name = newName.trim();
+    if (!name) return;
+    const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? crypto.randomUUID() : String(Date.now());
+    await d.updateColumnSettings(column.id, { options: [...options, { id, name }] });
+    setNewName('');
+    await d.setCell(item.id, column.id, { option_ids: [...ids, id] });
+  };
+  return (
+    <Pop label={column.title} trigger={face} width={240}>
+      <ul className="grid max-h-[240px] gap-[2px] overflow-y-auto" role="listbox" aria-multiselectable="true">
+        {options.map((o) => (
+          <li key={o.id}>
+            <button type="button" role="option" aria-selected={ids.includes(o.id)} onClick={() => toggle(o.id)}
+              className="flex w-full items-center gap-2 rounded-xs px-2 py-[6px] text-sm hover:bg-surface-hover">
+              <span className="flex-1 text-start">{o.name}</span>
+              {ids.includes(o.id) && <Check size={16} className="text-accent" />}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form className="mt-1 flex gap-1 border-t border-border pt-2" onSubmit={(e) => { e.preventDefault(); addOption(); }}>
+        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={t('newOption')} aria-label={t('newOption')}
+          className="h-8 min-w-0 flex-1 rounded-sm border border-border-input bg-bg px-2 text-sm" />
+        <button type="submit" className="rounded-sm px-2 text-sm text-accent hover:bg-surface-hover">{t('addOption')}</button>
+      </form>
+    </Pop>
+  );
+}
+
+// ---------- checkbox
+
+export function CheckboxCell({ item, column, canEdit, onSet }: CellProps) {
+  const v = item.vals[column.id] as CheckboxValue | undefined;
+  return (
+    <label className="flex h-full min-h-[35px] w-full cursor-pointer items-center justify-center">
+      <input type="checkbox" checked={!!v?.checked} disabled={!canEdit} aria-label={column.title}
+        onChange={(e) => onSet(e.target.checked ? { checked: true } : null)} className="h-4 w-4 accent-[color:var(--c-accent)]" />
+    </label>
+  );
+}
+
+// ---------- phone / email: edit in place
+
+export function PhoneCell({ item, column, canEdit, onSet, onInvalid }: CellProps & { onInvalid: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const v = item.vals[column.id] as PhoneValue | undefined;
+  if (editing) {
+    return <InlineEditor numeric label={column.title} initialValue={v?.phone ?? ''} onCancel={() => setEditing(false)}
+      onCommit={(s) => {
+        setEditing(false);
+        const c = s.trim().replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+        if (c === (v?.phone ?? '')) return;
+        if (!c) { onSet(null); return; }
+        if (!/^\+?[0-9 ()-]{6,20}$/.test(c)) { onInvalid(); return; }
+        onSet({ phone: c });
+      }} />;
+  }
+  const digits = v?.phone.replace(/\D/g, '');
+  return (
+    <div className="group flex h-full min-h-[35px] w-full items-center justify-center gap-1 px-1">
+      <button type="button" disabled={!canEdit} onClick={() => setEditing(true)} aria-label={`${column.title}: ${v?.phone ?? '—'}`}
+        className="h-full min-h-[35px] min-w-0 flex-1 truncate text-sm tabular-nums disabled:cursor-default"><bdi dir="ltr">{v?.phone ?? ''}</bdi></button>
+      {digits && (
+        <a href={`https://wa.me/${digits}`} target="_blank" rel="noreferrer" aria-label={`WhatsApp ${v?.phone}`} title="WhatsApp"
+          className="flex-none rounded-xs px-1 text-xs font-semibold text-success hover:bg-surface-hover">WA</a>
+      )}
+    </div>
+  );
+}
+
+export function EmailCell({ item, column, canEdit, onSet, onInvalid }: CellProps & { onInvalid: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const v = item.vals[column.id] as EmailValue | undefined;
+  if (editing) {
+    return <InlineEditor numeric label={column.title} initialValue={v?.email ?? ''} onCancel={() => setEditing(false)}
+      onCommit={(s) => {
+        setEditing(false);
+        const c = s.trim();
+        if (c === (v?.email ?? '')) return;
+        if (!c) { onSet(null); return; }
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c)) { onInvalid(); return; }
+        onSet({ email: c });
+      }} />;
+  }
+  return (
+    <button type="button" disabled={!canEdit} onClick={() => setEditing(true)} aria-label={`${column.title}: ${v?.email ?? '—'}`}
+      className="h-full min-h-[35px] w-full truncate px-2 text-sm disabled:cursor-default"><bdi dir="ltr">{v?.email ?? ''}</bdi></button>
+  );
+}
+
+// ---------- link
+
+export function LinkCell({ item, column, canEdit, onSet, onInvalid }: CellProps & { onInvalid: () => void }) {
+  const { t } = useLang();
+  const [open, setOpen] = useState(false);
+  const v = item.vals[column.id] as LinkValue | undefined;
+  const shown = v ? (v.label || v.url.replace(/^https?:\/\//, '')) : '';
+  const face = (
+    <button type="button" disabled={!canEdit} aria-label={`${column.title}: ${shown || '—'}`}
+      className="h-full min-h-[35px] min-w-0 flex-1 truncate px-2 text-sm text-accent disabled:cursor-default" dir="auto">{shown}</button>
+  );
+  return (
+    <div className="flex h-full w-full min-w-0 items-center">
+      {canEdit ? (
+        <Pop label={column.title} trigger={face} open={open} onOpenChange={setOpen} width={280}>
+          <form className="grid gap-2" onSubmit={(e) => {
+            e.preventDefault();
+            const f = new FormData(e.currentTarget);
+            const url = String(f.get('url') ?? '').trim();
+            const label = String(f.get('label') ?? '').trim();
+            if (!url) { onSet(null); setOpen(false); return; }
+            const full = /^https?:\/\//.test(url) ? url : `https://${url}`;
+            if (!/^https?:\/\/\S+\.\S+/.test(full)) { onInvalid(); return; }
+            onSet(label ? { url: full, label } : { url: full });
+            setOpen(false);
+          }}>
+            <input name="url" autoFocus defaultValue={v?.url ?? ''} dir="ltr" placeholder="https://" aria-label="URL" className="h-8 rounded-sm border border-border-input bg-bg px-2 text-sm" />
+            <input name="label" defaultValue={v?.label ?? ''} placeholder={t('urlLabel')} aria-label={t('urlLabel')} className="h-8 rounded-sm border border-border-input bg-bg px-2 text-sm" />
+            <button type="submit" className="h-8 rounded-sm bg-accent text-sm text-on-accent">{t('save')}</button>
+          </form>
+        </Pop>
+      ) : face}
+      {v && <a href={v.url} target="_blank" rel="noreferrer" aria-label={t('openLink')} className="flex-none px-1 text-text-subtle hover:text-accent"><ExternalLink size={14} /></a>}
+    </div>
+  );
+}
+
+// ---------- timeline
+
+export function TimelineCell({ item, column, canEdit, onSet, onInvalid }: CellProps & { onInvalid: () => void }) {
+  const { t, locale } = useLang();
+  const v = item.vals[column.id] as TimelineValue | undefined;
+  const today = todayISO();
+  const pct = v ? Math.max(0, Math.min(100, ((Date.parse(today) - Date.parse(v.from)) / Math.max(1, Date.parse(v.to) - Date.parse(v.from))) * 100)) : 0;
+  const face = (
+    <button type="button" disabled={!canEdit} aria-label={`${column.title}: ${v ? `${fmtDate(v.from, locale)} – ${fmtDate(v.to, locale)}` : '—'}`}
+      className="group flex h-full min-h-[35px] w-full items-center justify-center px-2 disabled:cursor-default">
+      {v ? (
+        <span className="relative flex h-6 w-full items-center justify-center overflow-hidden rounded-pill bg-label-empty text-xs font-medium text-on-label-dark">
+          <span className="absolute inset-y-0 start-0 bg-accent" style={{ width: `${pct}%` }} />
+          <span className="relative tabular-nums mix-blend-normal" style={{ color: pct > 50 ? 'var(--c-on-accent)' : undefined }}>{fmtDate(v.from, locale)} – {fmtDate(v.to, locale)}</span>
+        </span>
+      ) : <Plus size={14} className="text-text-subtle opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />}
+    </button>
+  );
+  if (!canEdit) return face;
+  return (
+    <Pop label={column.title} trigger={face} width={260}>
+      <form className="grid gap-2" onSubmit={(e) => {
+        e.preventDefault();
+        const f = new FormData(e.currentTarget);
+        const from = String(f.get('from') ?? ''), to = String(f.get('to') ?? '');
+        if (!from && !to) { onSet(null); return; }
+        if (!from || !to || from > to) { onInvalid(); return; }
+        onSet({ from, to });
+      }}>
+        <label className="grid gap-1 text-sm">{t('from')}<input name="from" type="date" defaultValue={v?.from} className="h-8 rounded-sm border border-border-input bg-bg px-2" /></label>
+        <label className="grid gap-1 text-sm">{t('to')}<input name="to" type="date" defaultValue={v?.to} className="h-8 rounded-sm border border-border-input bg-bg px-2" /></label>
+        <div className="flex gap-2">
+          <button type="submit" className="h-8 flex-1 rounded-sm bg-accent text-sm text-on-accent">{t('save')}</button>
+          {v && <button type="button" onClick={() => onSet(null)} className="h-8 rounded-sm px-3 text-sm hover:bg-surface-hover">{t('clear')}</button>}
+        </div>
+      </form>
+    </Pop>
+  );
+}
+
+// ---------- files
+
+export function FilesCell({ item, column, canEdit }: CellProps) {
+  const { t } = useLang();
+  const d = useData();
+  const { data: assets = [] } = useAssets(item.boardId, item.id);
+  const [err, setErr] = useState('');
+  const v = item.vals[column.id] as FilesValue | undefined;
+  const mine = assets.filter((a) => v?.asset_ids.includes(a.id));
+  const face = (
+    <button type="button" aria-label={`${column.title}: ${mine.length}`} className="group flex h-full min-h-[35px] w-full items-center justify-center gap-1">
+      {mine.length ? (<><Paperclip size={14} className="text-text-muted" /><span className="text-sm tabular-nums">{mine.length}</span></>)
+        : <Plus size={14} className="text-text-subtle opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />}
+    </button>
+  );
+  return (
+    <Pop label={column.title} trigger={face} width={280}>
+      <ul className="grid max-h-[220px] gap-1 overflow-y-auto">
+        {mine.map((a) => (
+          <li key={a.id} className="flex items-center gap-2 text-sm">
+            {a.mimeType.startsWith('image/') ? <img src={a.url} alt={a.fileName} className="h-9 w-9 rounded-xs object-cover" /> : <FileText size={18} className="text-text-muted" />}
+            <span className="min-w-0 flex-1 truncate" dir="auto">{a.fileName}</span>
+            <span className="text-xs text-text-subtle tabular-nums">{Math.max(1, Math.round(a.sizeBytes / 1024))} KB</span>
+          </li>
+        ))}
+        {!mine.length && <li className="text-sm text-text-muted">{t('noFiles')}</li>}
+      </ul>
+      {canEdit && (
+        <label className="mt-2 flex h-8 cursor-pointer items-center justify-center gap-2 rounded-sm border border-dashed border-border-strong text-sm text-accent hover:bg-surface-hover">
+          <Paperclip size={14} />{t('upload')}
+          <input type="file" className="sr-only" onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (!f) return;
+            setErr('');
+            try { await d.uploadToCell(item.id, column.id, await readFile(f)); }
+            catch (x) { setErr((x as Error).message === 'file too large' ? t('fileTooLarge') : (x as Error).message); }
+          }} />
+        </label>
+      )}
+      {err && <p role="alert" className="mt-1 text-xs text-danger">{err}</p>}
+    </Pop>
+  );
+}
+
+// ---------- one entry point for every column type
+
+export function AnyCell(props: CellProps & { doneIds: Set<string>; onInvalid: () => void }) {
+  const { column, doneIds, onInvalid, ...rest } = props;
+  const p = { ...rest, column };
+  switch (column.type) {
+    case 'status': return <StatusCell {...p} />;
+    case 'people': return <PeopleCell {...p} />;
+    case 'date': return <DateCell {...p} doneLabelIds={doneIds} />;
+    case 'text': return <TextCell {...p} />;
+    case 'numbers': return <NumbersCell {...p} onInvalid={onInvalid} />;
+    case 'long_text': return <LongTextCell {...p} />;
+    case 'dropdown': return <DropdownCell {...p} />;
+    case 'checkbox': return <CheckboxCell {...p} />;
+    case 'phone': return <PhoneCell {...p} onInvalid={onInvalid} />;
+    case 'email': return <EmailCell {...p} onInvalid={onInvalid} />;
+    case 'link': return <LinkCell {...p} onInvalid={onInvalid} />;
+    case 'timeline': return <TimelineCell {...p} onInvalid={onInvalid} />;
+    case 'files': return <FilesCell {...p} />;
+  }
 }

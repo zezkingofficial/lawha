@@ -9,6 +9,7 @@ import { useLang } from '@/lib/i18n';
 import { useRouter } from '@/lib/router';
 import { Avatar, Button, IconButton } from '../ui';
 import { BoardScreen } from '../board/BoardScreen';
+import { Inbox, MyWork, useUnreadCount } from '../personal';
 
 // Top-level client app: picks the screen for the current route.
 export function LawhaApp() {
@@ -18,7 +19,10 @@ export function LawhaApp() {
   if (!me) return <SignIn />;
   return (
     <Shell me={me}>
-      {route.name === 'board' ? <BoardScreen boardId={route.boardId} /> : <Home />}
+      {route.name === 'board' ? <BoardScreen boardId={route.boardId} />
+        : route.name === 'mywork' ? <MyWork />
+        : route.name === 'inbox' ? <Inbox />
+        : <Home />}
     </Shell>
   );
 }
@@ -72,7 +76,7 @@ function TopBar({ me, onMenu }: { me: Profile; onMenu: () => void }) {
         <Search size={16} /><span className="text-sm">{t('search')}</span><span className="ms-auto rounded-xs border border-border-strong px-1 font-mono text-xs">{t('soon')}</span>
       </div>
       <div className="ms-auto flex items-center gap-[2px] md:ms-0">
-        <IconButton label={t('inbox')} disabled title={t('soon')}><Bell size={18} /></IconButton>
+        <BellButton />
         <Dropdown.Root>
           <Dropdown.Trigger asChild>
             <button type="button" aria-label={me.fullName} className="rounded-pill"><Avatar person={me} size={30} /></button>
@@ -112,7 +116,8 @@ function Sidebar() {
         {account}
       </div>
       <NavButton active={route.name === 'home'} onClick={() => go({ name: 'home' })} icon={<House size={16} />}>{t('home')}</NavButton>
-      <NavButton active={false} disabled icon={<CalendarCheck size={16} />} hint={t('soon')}>{t('myWork')}</NavButton>
+      <NavButton active={route.name === 'mywork'} onClick={() => go({ name: 'mywork' })} icon={<CalendarCheck size={16} />}>{t('myWork')}</NavButton>
+      <NavButton active={route.name === 'inbox'} onClick={() => go({ name: 'inbox' })} icon={<Bell size={16} />} hint={<UnreadBadge />}>{t('inbox')}</NavButton>
       {workspaces.map((w) => <WorkspaceSection key={w.id} ws={w} />)}
     </nav>
   );
@@ -159,7 +164,7 @@ function WorkspaceSection({ ws }: { ws: Workspace }) {
   );
 }
 
-function NavButton({ children, active, onClick, icon, disabled, hint }: { children: ReactNode; active: boolean; onClick?: () => void; icon: ReactNode; disabled?: boolean; hint?: string }) {
+function NavButton({ children, active, onClick, icon, disabled, hint }: { children: ReactNode; active: boolean; onClick?: () => void; icon: ReactNode; disabled?: boolean; hint?: ReactNode }) {
   return (
     <button type="button" onClick={onClick} disabled={disabled} aria-current={active ? 'page' : undefined}
       className={clsx('flex h-8 w-full items-center gap-[10px] rounded-sm px-[10px] text-start text-sm disabled:opacity-60',
@@ -239,5 +244,23 @@ function SignIn() {
         </Button>
       </div>
     </main>
+  );
+}
+
+function UnreadBadge() {
+  const n = useUnreadCount();
+  if (!n) return null;
+  return <span className="rounded-pill bg-danger px-[6px] text-[11px] font-semibold tabular-nums text-on-accent">{n}</span>;
+}
+
+function BellButton() {
+  const { t } = useLang();
+  const { go } = useRouter();
+  const n = useUnreadCount();
+  return (
+    <IconButton label={n ? `${t('inbox')}: ${n} ${t('unread')}` : t('inbox')} onClick={() => go({ name: 'inbox' })} className="relative">
+      <Bell size={18} />
+      {n > 0 && <span className="absolute end-[2px] top-[2px] grid h-4 min-w-4 place-items-center rounded-pill bg-danger px-[3px] text-[10px] font-semibold tabular-nums text-on-accent">{n}</span>}
+    </IconButton>
   );
 }

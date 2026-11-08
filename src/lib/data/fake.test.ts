@@ -83,3 +83,83 @@ describe('fake data layer', () => {
     expect((await d2.getBoard('b-orders'))!.items.find((i) => i.id === 'i-1')!.name).toBe('اسم جديد');
   });
 });
+
+describe('collaboration and personal views', () => {
+  it('notifies a newly assigned person once, not the person assigning', async () => {
+    const d = await signedIn('u-ahmed');
+    await d.setCell('i-2', 'c-o-owner', { user_ids: ['u-sara', 'u-ahmed', 'u-mohamed'] });
+    await d.signIn('u-mohamed');
+    const n = (await d.notifications()).filter((x) => x.kind === 'assigned' && x.itemId === 'i-2');
+    expect(n).toHaveLength(1);
+    await d.signIn('u-ahmed');
+    expect((await d.notifications()).some((x) => x.kind === 'assigned' && x.itemId === 'i-2')).toBe(false);
+  });
+
+  it('posts an update: mention for the mentioned, update for followers, nothing for the author', async () => {
+    const d = await signedIn('u-sara');
+    await d.postUpdate('i-3', '@أحمد تمام، هكلم العميل', ['u-ahmed', 'u-ahmed']);
+    await d.signIn('u-ahmed');
+    const forAhmed = (await d.notifications()).filter((x) => x.itemId === 'i-3' && x.updateId && x.updateId !== 'up-1');
+    expect(forAhmed.map((x) => x.kind)).toEqual(['mention']);
+    await d.signIn('u-mohamed');
+    expect((await d.notifications()).filter((x) => x.itemId === 'i-3').map((x) => x.kind)).toEqual(['update']);
+    await d.signIn('u-sara');
+    expect((await d.notifications()).filter((x) => x.itemId === 'i-3')).toHaveLength(0);
+  });
+
+  it('marks notifications read', async () => {
+    const d = await signedIn('u-ahmed');
+    expect((await d.notifications()).filter((n) => !n.readAt).length).toBeGreaterThan(0);
+    await d.markRead('all');
+    expect((await d.notifications()).filter((n) => !n.readAt)).toHaveLength(0);
+  });
+
+  it('creates subitems and the subitem columns on first use', async () => {
+    const d = await signedIn();
+    const s = await d.createSubitem('i-2', 'تصميم البروفة');
+    const b = (await d.getBoard('b-orders'))!;
+    expect(b.items.find((i) => i.id === s.id)?.parentItemId).toBe('i-2');
+    expect(b.columns.filter((c) => c.scope === 'subitem').length).toBe(3);
+  });
+
+  it('adds, renames and deletes a column, removing its values', async () => {
+    const d = await signedIn();
+    const c = await d.createColumn('b-orders', 'checkbox', 'تم الدفع');
+    await d.setCell('i-1', c.id, { checked: true });
+    await d.renameColumn(c.id, 'مدفوع');
+    expect((await d.getBoard('b-orders'))!.columns.find((x) => x.id === c.id)?.title).toBe('مدفوع');
+    await d.deleteColumn(c.id);
+    const b = (await d.getBoard('b-orders'))!;
+    expect(b.columns.some((x) => x.id === c.id)).toBe(false);
+    expect(c.id in b.items.find((i) => i.id === 'i-1')!.vals).toBe(false);
+  });
+
+  it('validates the new column types', async () => {
+    const d = await signedIn();
+    await expect(d.setCell('i-1', 'c-o-phone', { phone: 'not a phone' })).rejects.toBeInstanceOf(CellError);
+    await expect(d.setCell('i-1', 'c-o-type', { option_ids: ['nope'] })).rejects.toBeInstanceOf(CellError);
+    const t = await d.createColumn('b-orders', 'timeline', 'مدة الإنتاج');
+    await expect(d.setCell('i-1', t.id, { from: '2026-11-20', to: '2026-11-10' })).rejects.toBeInstanceOf(CellError);
+    await d.setCell('i-1', t.id, { from: '2026-11-10', to: '2026-11-20' });
+  });
+
+  it('lists My Work for the signed-in person, including subitems, by date', async () => {
+    const d = await signedIn('u-mohamed');
+    const rows = await d.myWork();
+    const ids = rows.map((r) => r.item.id);
+    expect(ids).toEqual(expect.arrayContaining(['i-1', 'i-3', 'i-6', 'i-1-a', 'i-1-b', 'i-p-1']));
+    expect(ids).not.toContain('i-2');
+    const dated = rows.filter((r) => r.date).map((r) => r.date!);
+    expect([...dated].sort()).toEqual(dated);
+  });
+
+  it('records activity for cell changes and keeps uploads on the item', async () => {
+    const d = await signedIn();
+    const f = await d.createColumn('b-orders', 'files', 'ملفات');
+    await d.uploadToCell('i-1', f.id, { name: 'bruva.png', type: 'image/png', size: 10, dataUrl: 'data:image/png;base64,AA==' });
+    await expect(d.uploadToCell('i-1', f.id, { name: 'big.pdf', type: 'application/pdf', size: 3 * 1024 * 1024, dataUrl: 'data:,' })).rejects.toThrow('file too large');
+    expect((await d.assets('i-1')).map((a) => a.fileName)).toEqual(['bruva.png']);
+    await d.setCell('i-1', 'c-o-status', { label_id: 'ready' });
+    expect((await d.activity('i-1'))[0]).toMatchObject({ action: 'cell_changed', columnId: 'c-o-status', after: { label_id: 'ready' } });
+  });
+});

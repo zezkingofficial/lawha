@@ -3,7 +3,7 @@ import { createContext, useContext, type ReactNode } from 'react';
 
 // Screens navigate through this, not through next/navigation directly, so the
 // same components run in the Next.js app and in the single-file demo build.
-export type Route = { name: 'home' } | { name: 'board'; boardId: string } | { name: 'mywork' } | { name: 'inbox' };
+export type Route = { name: 'home' } | { name: 'board'; boardId: string; itemId?: string } | { name: 'mywork' } | { name: 'inbox' };
 
 interface RouterCtx { route: Route; go: (r: Route) => void }
 const Ctx = createContext<RouterCtx | null>(null);
@@ -20,7 +20,7 @@ export function useRouter() {
 
 export function routeToPath(r: Route): string {
   switch (r.name) {
-    case 'board': return `/boards/${r.boardId}`;
+    case 'board': return r.itemId ? `/boards/${r.boardId}/items/${r.itemId}` : `/boards/${r.boardId}`;
     case 'mywork': return '/my-work';
     case 'inbox': return '/inbox';
     default: return '/';
@@ -28,9 +28,26 @@ export function routeToPath(r: Route): string {
 }
 
 export function pathToRoute(path: string): Route {
-  const m = path.match(/^\/boards\/([^/]+)/);
-  if (m) return { name: 'board', boardId: decodeURIComponent(m[1]) };
+  const m = path.match(/^\/boards\/([^/]+)(?:\/items\/([^/]+))?/);
+  if (m) return { name: 'board', boardId: decodeURIComponent(m[1]), itemId: m[2] ? decodeURIComponent(m[2]) : undefined };
   if (path.startsWith('/my-work')) return { name: 'mywork' };
   if (path.startsWith('/inbox')) return { name: 'inbox' };
+  return { name: 'home' };
+}
+
+// Demo build: a plain #name hash (letters, digits, hyphens only)
+export function routeToHash(r: Route): string {
+  if (r.name === 'board') return r.itemId ? `#board-${r.boardId}--item-${r.itemId}` : `#board-${r.boardId}`;
+  if (r.name === 'mywork') return '#my-work';
+  if (r.name === 'inbox') return '#inbox';
+  return '#home';
+}
+
+export function hashToRoute(hash: string): Route {
+  const h = hash.replace(/^#/, '');
+  const m = h.match(/^board-(.+?)(?:--item-(.+))?$/);
+  if (m) return { name: 'board', boardId: m[1], itemId: m[2] };
+  if (h === 'my-work') return { name: 'mywork' };
+  if (h === 'inbox') return { name: 'inbox' };
   return { name: 'home' };
 }

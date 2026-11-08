@@ -1,7 +1,7 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { browserPersist, createFakeLayer } from './fake';
-import type { BoardBundle, DataLayer, Profile, Workspace, Board } from './types';
+import type { ActivityEntry, Asset, BoardBundle, DataLayer, MyWorkRow, Notification, Profile, Update, Workspace, Board } from './types';
 
 // Swap point: replica-backend replaces createFakeLayer(...) with the Supabase layer.
 const Ctx = createContext<DataLayer | null>(null);
@@ -42,3 +42,13 @@ export const useBoards = (workspaceId: string) =>
   useLive<Board[]>((d) => d.boards(workspaceId), (d, cb) => d.subscribeAll(cb), [workspaceId]);
 export const useBoard = (boardId: string) =>
   useLive<BoardBundle | null>((d) => d.getBoard(boardId), (d, cb) => d.subscribe(boardId, cb), [boardId]);
+export const useUpdates = (boardId: string, itemId: string) =>
+  useLive<Update[]>((d) => d.updates(itemId), (d, cb) => d.subscribe(boardId, cb), [boardId, itemId]);
+export const useAssets = (boardId: string, itemId: string) =>
+  useLive<Asset[]>((d) => d.assets(itemId), (d, cb) => d.subscribe(boardId, cb), [boardId, itemId]);
+export const useActivity = (boardId: string, itemId: string) =>
+  useLive<ActivityEntry[]>((d) => d.activity(itemId), (d, cb) => d.subscribe(boardId, cb), [boardId, itemId]);
+export const useNotifications = () => useLive<Notification[]>((d) => d.notifications(), (d, cb) => d.subscribeAll(cb), []);
+export const useMyWork = () => useLive<MyWorkRow[]>((d) => d.myWork(), (d, cb) => d.subscribeAll(cb), []);
+export const useAllBoards = () =>
+  useLive<Board[]>(async (d) => (await Promise.all((await d.workspaces()).map((w) => d.boards(w.id)))).flat(), (d, cb) => d.subscribeAll(cb), []);

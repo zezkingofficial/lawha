@@ -49,7 +49,9 @@ export interface Group {
   deletedAt: string | null;
 }
 
-export type ColumnType = 'status' | 'people' | 'date' | 'text' | 'numbers';
+export type ColumnType =
+  | 'status' | 'people' | 'date' | 'text' | 'numbers'
+  | 'long_text' | 'dropdown' | 'checkbox' | 'phone' | 'timeline' | 'files' | 'link' | 'email';
 
 export interface StatusLabel {
   id: string;
@@ -58,8 +60,11 @@ export interface StatusLabel {
   done: boolean;
 }
 
+export interface DropdownOption { id: string; name: string }
+
 export interface ColumnSettings {
   labels?: StatusLabel[];
+  options?: DropdownOption[];
   unit?: string;
   unitPosition?: 'before' | 'after';
 }
@@ -80,7 +85,16 @@ export type PeopleValue = { user_ids: string[] };
 export type DateValue = { date: string }; // YYYY-MM-DD, a calendar date with no time zone
 export type TextValue = { text: string };
 export type NumbersValue = { number: string };
-export type CellValue = StatusValue | PeopleValue | DateValue | TextValue | NumbersValue;
+export type DropdownValue = { option_ids: string[] };
+export type CheckboxValue = { checked: boolean };
+export type PhoneValue = { phone: string };
+export type TimelineValue = { from: string; to: string };
+export type FilesValue = { asset_ids: string[] };
+export type LinkValue = { url: string; label?: string };
+export type EmailValue = { email: string };
+export type CellValue =
+  | StatusValue | PeopleValue | DateValue | TextValue | NumbersValue
+  | DropdownValue | CheckboxValue | PhoneValue | TimelineValue | FilesValue | LinkValue | EmailValue;
 
 export interface Item {
   id: string;
@@ -96,11 +110,74 @@ export interface Item {
   updatedAt: string;
 }
 
+export interface Update {
+  id: string;
+  boardId: string;
+  itemId: string;
+  parentUpdateId: string | null;
+  authorId: string | null;
+  bodyText: string;          // plain text; mentions appear as @Name and are listed in mentionedUserIds
+  mentionedUserIds: string[];
+  assetIds: string[];
+  createdAt: string;
+  editedAt: string | null;
+}
+
+export interface Asset {
+  id: string;
+  boardId: string;
+  itemId: string | null;
+  updateId: string | null;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  url: string;               // fake layer: a data: URL; Supabase: a signed storage URL
+  uploadedBy: string | null;
+  createdAt: string;
+}
+
+export type NotificationKind = 'mention' | 'assigned' | 'update';
+
+export interface Notification {
+  id: string;
+  userId: string;
+  kind: NotificationKind;
+  actorId: string | null;
+  boardId: string;
+  itemId: string;
+  updateId: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface ActivityEntry {
+  id: string;
+  boardId: string;
+  itemId: string;
+  actorId: string | null;
+  action: 'item_created' | 'name_changed' | 'cell_changed' | 'item_moved' | 'item_deleted' | 'item_restored';
+  columnId: string | null;
+  before: unknown;
+  after: unknown;
+  createdAt: string;
+}
+
+export interface MyWorkRow {
+  item: Item;
+  board: Board;
+  date: string | null;        // first date column with a value
+  statusLabel: StatusLabel | null;
+  done: boolean;
+}
+
+export interface NewFile { name: string; type: string; size: number; dataUrl: string }
+
 export interface BoardBundle {
   board: Board;
   groups: Group[];   // ordered by position, deleted excluded
   columns: Column[]; // ordered by position
   items: Item[];     // ordered by position, deleted excluded
+  updateCounts: Record<string, number>; // item id -> number of updates (replies included)
 }
 
 export interface Place {
@@ -136,6 +213,29 @@ export interface DataLayer {
   moveItem(itemId: string, place: Place): Promise<void>;
   deleteItem(itemId: string): Promise<void>;
   restoreItem(itemId: string): Promise<void>;
+
+  // columns
+  createColumn(boardId: string, type: ColumnType, title: string, scope?: 'item' | 'subitem'): Promise<Column>;
+  renameColumn(columnId: string, title: string): Promise<void>;
+  deleteColumn(columnId: string): Promise<void>;
+  updateColumnSettings(columnId: string, settings: ColumnSettings): Promise<void>;
+
+  // subitems: the first one also creates the board's subitem columns
+  createSubitem(parentItemId: string, name: string): Promise<Item>;
+
+  // item card
+  updates(itemId: string): Promise<Update[]>;
+  postUpdate(itemId: string, bodyText: string, mentionedUserIds: string[], opts?: { parentUpdateId?: string; files?: NewFile[] }): Promise<Update>;
+  editUpdate(updateId: string, bodyText: string): Promise<void>;
+  deleteUpdate(updateId: string): Promise<void>;
+  assets(itemId: string): Promise<Asset[]>;
+  uploadToCell(itemId: string, columnId: string, file: NewFile): Promise<Asset>;
+  activity(itemId: string): Promise<ActivityEntry[]>;
+
+  // personal
+  notifications(): Promise<Notification[]>;
+  markRead(ids: string[] | 'all'): Promise<void>;
+  myWork(): Promise<MyWorkRow[]>;
 
   // realtime: called whenever this board changes, here or in another tab/device
   subscribe(boardId: string, onChange: () => void): () => void;

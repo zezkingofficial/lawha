@@ -1,17 +1,19 @@
 'use client';
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
+import * as Popover from '@radix-ui/react-popover';
 import clsx from 'clsx';
-import { ChevronDown, Columns3, Ellipsis, LayoutGrid, MessageSquare, Plus, Search, Table2, Trash2, UserRound, Pencil, CalendarDays, Radio } from 'lucide-react';
-import { useMemo, useRef, useState, type CSSProperties } from 'react';
+import { ChevronDown, ChevronLeft, Columns3, Ellipsis, LayoutGrid, MessageSquare, Plus, Search, Table2, Trash2, UserRound, Pencil, CalendarDays, Radio, CircleDot, Users, Calendar, Type, Hash, AlignRight, ListChecks, SquareCheck, Phone, GanttChart, Paperclip, Link2, Mail, Maximize2 } from 'lucide-react';
+import { Fragment, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useBoard, useData, useMe, useMembers } from '@/lib/data/context';
 import { CellError, searchText } from '@/lib/data/validate';
 import { NotAllowed } from '@/lib/data/fake';
-import type { BoardBundle, CellValue, Column, Group, Item, PeopleValue, Profile, StatusValue, NumbersValue } from '@/lib/data/types';
+import type { BoardBundle, CellValue, Column, ColumnType, Group, Item, PeopleValue, Profile, StatusValue, NumbersValue } from '@/lib/data/types';
 import { fmtNumber, labelBg, labelFg } from '@/lib/format';
 import { useLang } from '@/lib/i18n';
 import { useRouter } from '@/lib/router';
 import { AvatarStack, Button, IconButton, useToast } from '../ui';
-import { DateCell, NumbersCell, PeopleCell, StatusCell, TextCell, type CellProps } from './cells';
+import { AnyCell } from './cells';
+import { ItemPanel } from './ItemPanel';
 
 type View = 'table' | 'kanban';
 
@@ -20,7 +22,8 @@ export function BoardScreen({ boardId }: { boardId: string }) {
   const { data: bundle, loading } = useBoard(boardId);
   const { data: me } = useMe();
   const { data: members = [] } = useMembers();
-  const { go } = useRouter();
+  const { route, go } = useRouter();
+  const openItem = (itemId: string) => go({ name: 'board', boardId, itemId });
   const [view, setView] = useState<View>('table');
   const [q, setQ] = useState('');
   const [mine, setMine] = useState(false);
@@ -91,11 +94,14 @@ export function BoardScreen({ boardId }: { boardId: string }) {
           {bundle.groups.map((g, gi) => (
             <GroupSection key={g.id} group={g} bundle={bundle} items={bundle.items.filter((i) => i.groupId === g.id && i.parentItemId === null)}
               visible={visible} filtering={filtering} members={members} me={me ?? null} canEdit={canEdit}
-              addRef={gi === 0 ? newItemRef : undefined} />
+              addRef={gi === 0 ? newItemRef : undefined} onOpen={openItem} />
           ))}
         </div>
       ) : (
-        <KanbanView bundle={bundle} visible={visible} members={members} canEdit={canEdit} />
+        <KanbanView bundle={bundle} visible={visible} members={members} canEdit={canEdit} onOpen={openItem} />
+      )}
+      {route.name === 'board' && route.itemId && (
+        <ItemPanel bundle={bundle} itemId={route.itemId} canEdit={canEdit} onClose={() => go({ name: 'board', boardId })} />
       )}
     </div>
   );
@@ -150,12 +156,12 @@ function useCellSetter() {
 }
 
 function gridTemplate(columns: Column[]): CSSProperties {
-  return { gridTemplateColumns: `4px var(--name-col) ${columns.map((c) => `${c.width}px`).join(' ')}` };
+  return { gridTemplateColumns: `4px var(--name-col) ${columns.map((c) => `${c.width}px`).join(' ')} 44px` };
 }
 
-function GroupSection({ group, bundle, items, visible, filtering, members, me, canEdit, addRef }: {
+function GroupSection({ group, bundle, items, visible, filtering, members, me, canEdit, addRef, onOpen }: {
   group: Group; bundle: BoardBundle; items: Item[]; visible: (i: Item) => boolean; filtering: boolean;
-  members: Profile[]; me: Profile | null; canEdit: boolean; addRef?: React.Ref<HTMLInputElement>;
+  members: Profile[]; me: Profile | null; canEdit: boolean; addRef?: React.Ref<HTMLInputElement>; onOpen: (id: string) => void;
 }) {
   const { t, locale } = useLang();
   const d = useData();
@@ -166,7 +172,10 @@ function GroupSection({ group, bundle, items, visible, filtering, members, me, c
   const cols = bundle.columns.filter((c) => c.scope === 'item');
   const doneIds = useMemo(() => new Set(cols.flatMap((c) => (c.settings.labels ?? []).filter((l) => l.done).map((l) => l.id))), [cols]);
   const style = { ...gridTemplate(cols), '--g': labelBg(group.color) } as CSSProperties;
-  const minWidth = `calc(var(--name-col) + ${4 + cols.reduce((s, c) => s + c.width, 0)}px)`;
+  const minWidth = `calc(var(--name-col) + ${4 + 44 + cols.reduce((s, c) => s + c.width, 0)}px)`;
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const toggleSub = (id: string) => setOpen((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const subCols = bundle.columns.filter((c) => c.scope === 'subitem');
 
   const removeGroup = async () => {
     await d.deleteGroup(group.id);
@@ -205,12 +214,32 @@ function GroupSection({ group, bundle, items, visible, filtering, members, me, c
             <div role="row" className="contents">
               <div className="sticky start-0 z-[1] bg-[color:var(--g)]" />
               <HeadCell start>{t('item')}</HeadCell>
-              {cols.map((c) => <HeadCell key={c.id}>{c.title}</HeadCell>)}
+              {cols.map((c) => <ColumnHeader key={c.id} column={c} canEdit={canEdit} />)}
+              <div className="flex min-h-row items-center justify-center border-b border-s border-border">
+                {canEdit && <AddColumnButton boardId={bundle.board.id} scope="item" />}
+              </div>
             </div>
 
-            {shown.map((it) => (
-              <ItemRow key={it.id} item={it} cols={cols} members={members} me={me} canEdit={canEdit} doneIds={doneIds} />
-            ))}
+            {shown.map((it) => {
+              const subs = bundle.items.filter((i) => i.parentItemId === it.id);
+              return (
+                <Fragment key={it.id}>
+                  <ItemRow item={it} cols={cols} members={members} me={me} canEdit={canEdit} doneIds={doneIds}
+                    subCount={subs.length} subOpen={open.has(it.id)} onToggleSub={() => toggleSub(it.id)}
+                    updates={bundle.updateCounts[it.id] ?? 0} onOpen={onOpen} />
+                  {open.has(it.id) && (
+                    <div role="row" className="contents">
+                      <div className="sticky start-0 z-[1] bg-[color:var(--g)] opacity-40" />
+                      <div className="col-[2/-1] border-b border-s border-border bg-surface py-2 pe-2 ps-8">
+                        <div className="sticky start-[36px] w-fit max-w-[calc(100vw-48px)] overflow-x-auto">
+                        <SubitemsTable parent={it} subs={subs} cols={subCols} bundle={bundle} members={members} me={me} canEdit={canEdit} onOpen={onOpen} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </Fragment>
+              );
+            })}
 
             {shown.length === 0 && (
               <div role="row" className="contents">
@@ -239,6 +268,7 @@ function GroupSection({ group, bundle, items, visible, filtering, members, me, c
                   {c.type === 'status' && <StatusDist col={c} items={shown} />}
                 </div>
               ))}
+              <div className="border-s border-border" />
             </div>
           </div>
         </div>
@@ -275,7 +305,10 @@ function StatusDist({ col, items }: { col: Column; items: Item[] }) {
   );
 }
 
-function ItemRow({ item, cols, members, me, canEdit, doneIds }: { item: Item; cols: Column[]; members: Profile[]; me: Profile | null; canEdit: boolean; doneIds: Set<string> }) {
+function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen, onToggleSub, updates, onOpen }: {
+  item: Item; cols: Column[]; members: Profile[]; me: Profile | null; canEdit: boolean; doneIds: Set<string>;
+  subCount: number; subOpen: boolean; onToggleSub: () => void; updates: number; onOpen: (id: string) => void;
+}) {
   const { t } = useLang();
   const d = useData();
   const toast = useToast();
@@ -290,40 +323,183 @@ function ItemRow({ item, cols, members, me, canEdit, doneIds }: { item: Item; co
   return (
     <div role="row" className="group/row contents">
       <div className="sticky start-0 z-[1] bg-[color:var(--g)]" />
-      <div role="gridcell" className="sticky start-[4px] z-[1] flex min-h-row min-w-0 items-center gap-2 border-b border-s border-border bg-bg pe-1 ps-3 text-sm group-hover/row:bg-surface-hover">
+      <div role="gridcell" className="sticky start-[4px] z-[1] flex min-h-row min-w-0 items-center gap-1 border-b border-s border-border bg-bg pe-1 ps-1 text-sm group-hover/row:bg-surface-hover">
+        <IconButton small label={subOpen ? t('hideSubitems') : t('showSubitems')} onClick={onToggleSub} aria-expanded={subOpen}
+          className={clsx('flex-none', !subCount && !subOpen && 'opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100')}>
+          <ChevronLeft size={15} className={clsx('transition-transform duration-base ltr:rotate-180', subOpen && '-rotate-90 ltr:rotate-90')} />
+        </IconButton>
         {renaming ? (
           <input autoFocus defaultValue={item.name} aria-label={t('rename')} dir="auto" className="h-7 w-full rounded-xs border border-focus bg-bg px-1"
             onBlur={(e) => { setRenaming(false); d.renameItem(item.id, e.target.value); }}
             onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(false); }} />
         ) : (
-          <button type="button" disabled={!canEdit} onClick={() => setRenaming(true)} dir="auto" title={item.name}
-            className="min-w-0 flex-1 truncate text-start disabled:cursor-default">{item.name}</button>
+          <button type="button" onClick={() => onOpen(item.id)} onDoubleClick={() => canEdit && setRenaming(true)} dir="auto" title={item.name}
+            className="min-w-0 flex-1 truncate text-start hover:underline">{item.name}</button>
         )}
-        <span className="hidden flex-none items-center gap-[2px] text-xs text-text-subtle sm:flex" title={t('updates')}><MessageSquare size={14} /></span>
+        {subCount > 0 && <span className="flex-none rounded-pill bg-surface-hover px-[6px] text-xs tabular-nums text-text-muted" title={t('subitems')}>{subCount}</span>}
+        <button type="button" onClick={() => onOpen(item.id)} aria-label={`${t('updates')}: ${updates}`}
+          className={clsx('hidden flex-none items-center gap-[2px] rounded-xs px-1 text-xs sm:flex', updates ? 'text-accent' : 'text-text-subtle hover:text-text')}>
+          <MessageSquare size={14} />{updates > 0 && <span className="tabular-nums">{updates}</span>}
+        </button>
         {canEdit && (
           <Dropdown.Root>
             <Dropdown.Trigger asChild>
               <IconButton label={`${t('itemMenu')}: ${item.name}`} small className="opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100 data-[state=open]:opacity-100"><Ellipsis size={15} /></IconButton>
             </Dropdown.Trigger>
             <Menu>
+              <MenuItem onSelect={() => onOpen(item.id)} icon={<Maximize2 size={15} />}>{t('openItem')}</MenuItem>
               <MenuItem onSelect={() => setRenaming(true)} icon={<Pencil size={15} />}>{t('rename')}</MenuItem>
               <MenuItem danger onSelect={remove} icon={<Trash2 size={15} />}>{t('deleteItem')}</MenuItem>
             </Menu>
           </Dropdown.Root>
         )}
       </div>
-      {cols.map((c) => {
-        const props: CellProps = { item, column: c, members, me, canEdit, onSet: (v) => setCell(item, c, v) };
-        return (
-          <div key={c.id} role="gridcell" className={clsx('flex min-h-row min-w-0 items-stretch border-b border-s border-border', c.type !== 'status' && 'group-hover/row:bg-surface-hover')}>
-            {c.type === 'status' && <StatusCell {...props} />}
-            {c.type === 'people' && <PeopleCell {...props} />}
-            {c.type === 'date' && <DateCell {...props} doneLabelIds={doneIds} />}
-            {c.type === 'text' && <TextCell {...props} />}
-            {c.type === 'numbers' && <NumbersCell {...props} onInvalid={() => toast({ tone: 'error', text: t('invalidNumber') })} />}
+      {cols.map((c) => (
+        <div key={c.id} role="gridcell" className={clsx('flex min-h-row min-w-0 items-stretch border-b border-s border-border', c.type !== 'status' && 'group-hover/row:bg-surface-hover')}>
+          <AnyCell item={item} column={c} members={members} me={me} canEdit={canEdit} doneIds={doneIds}
+            onSet={(v) => setCell(item, c, v)} onInvalid={() => toast({ tone: 'error', text: t('invalidValue') })} />
+        </div>
+      ))}
+      <div className="border-b border-s border-border group-hover/row:bg-surface-hover" />
+    </div>
+  );
+}
+
+function SubitemsTable({ parent, subs, cols, bundle, members, me, canEdit, onOpen }: {
+  parent: Item; subs: Item[]; cols: Column[]; bundle: BoardBundle; members: Profile[]; me: Profile | null; canEdit: boolean; onOpen: (id: string) => void;
+}) {
+  const { t } = useLang();
+  const d = useData();
+  const toast = useToast();
+  const setCell = useCellSetter();
+  const [v, setV] = useState('');
+  const doneIds = new Set(cols.flatMap((c) => (c.settings.labels ?? []).filter((l) => l.done).map((l) => l.id)));
+  const tpl = { gridTemplateColumns: `minmax(160px, 260px) ${cols.map((c) => `${c.width}px`).join(' ')} 44px` };
+  return (
+    <div role="grid" aria-label={`${t('subitems')}: ${parent.name}`} className="inline-grid overflow-clip rounded-sm border border-border bg-bg" style={tpl}>
+      <div role="row" className="contents">
+        <div role="columnheader" className="flex min-h-[32px] items-center border-b border-border px-3 text-xs font-medium text-text-muted">{t('subitems')}</div>
+        {cols.map((c) => <ColumnHeader key={c.id} column={c} canEdit={canEdit} compact />)}
+        <div className="flex items-center justify-center border-b border-s border-border">{canEdit && <AddColumnButton boardId={bundle.board.id} scope="subitem" />}</div>
+      </div>
+      {subs.map((s) => (
+        <div role="row" key={s.id} className="group/row contents">
+          <div role="gridcell" className="flex min-h-[34px] min-w-0 items-center border-b border-border px-3 text-sm group-hover/row:bg-surface-hover">
+            <button type="button" onClick={() => onOpen(s.id)} dir="auto" title={s.name} className="min-w-0 flex-1 truncate text-start hover:underline">{s.name}</button>
+            {canEdit && (
+              <IconButton small label={`${t('deleteItem')}: ${s.name}`} className="opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100"
+                onClick={async () => { await d.deleteItem(s.id); toast({ text: `${t('deleted')}: ${s.name}`, undo: () => d.restoreItem(s.id) }); }}>
+                <Trash2 size={14} />
+              </IconButton>
+            )}
           </div>
-        );
-      })}
+          {cols.map((c) => (
+            <div key={c.id} role="gridcell" className="flex min-h-[34px] min-w-0 items-stretch border-b border-s border-border">
+              <AnyCell item={s} column={c} members={members} me={me} canEdit={canEdit} doneIds={doneIds}
+                onSet={(val) => setCell(s, c, val)} onInvalid={() => toast({ tone: 'error', text: t('invalidValue') })} />
+            </div>
+          ))}
+          <div className="border-b border-s border-border" />
+        </div>
+      ))}
+      {canEdit && (
+        <div role="row" className="contents">
+          <div className="col-[1/-1] flex min-h-[34px] items-center px-3">
+            <input value={v} onChange={(e) => setV(e.target.value)} placeholder={t('addSubitem')} aria-label={t('addSubitem')}
+              className="w-full bg-transparent text-sm outline-none placeholder:text-text-subtle"
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter' && v.trim()) {
+                  try { await d.createSubitem(parent.id, v); setV(''); } catch (err) { toast({ tone: 'error', text: (err as Error).message }); }
+                }
+              }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const COLUMN_TYPES: { type: ColumnType; ar: string; en: string; icon: React.ReactNode }[] = [
+  { type: 'status', ar: 'حالة', en: 'Status', icon: <CircleDot size={16} /> },
+  { type: 'people', ar: 'أشخاص', en: 'People', icon: <Users size={16} /> },
+  { type: 'date', ar: 'تاريخ', en: 'Date', icon: <Calendar size={16} /> },
+  { type: 'timeline', ar: 'مدة زمنية', en: 'Timeline', icon: <GanttChart size={16} /> },
+  { type: 'text', ar: 'نص', en: 'Text', icon: <Type size={16} /> },
+  { type: 'long_text', ar: 'نص طويل', en: 'Long text', icon: <AlignRight size={16} /> },
+  { type: 'numbers', ar: 'أرقام', en: 'Numbers', icon: <Hash size={16} /> },
+  { type: 'dropdown', ar: 'قائمة اختيارات', en: 'Dropdown', icon: <ListChecks size={16} /> },
+  { type: 'checkbox', ar: 'علامة صح', en: 'Checkbox', icon: <SquareCheck size={16} /> },
+  { type: 'phone', ar: 'تليفون', en: 'Phone', icon: <Phone size={16} /> },
+  { type: 'email', ar: 'إيميل', en: 'Email', icon: <Mail size={16} /> },
+  { type: 'link', ar: 'رابط', en: 'Link', icon: <Link2 size={16} /> },
+  { type: 'files', ar: 'ملفات', en: 'Files', icon: <Paperclip size={16} /> },
+];
+
+function AddColumnButton({ boardId, scope }: { boardId: string; scope: 'item' | 'subitem' }) {
+  const { t, lang } = useLang();
+  const d = useData();
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild><IconButton small label={t('addColumn')}><Plus size={16} /></IconButton></Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content aria-label={t('addColumn')} sideOffset={6} collisionPadding={8} className="z-30 w-[300px] rounded-md border border-border bg-surface-raised p-2 shadow-pop">
+          <p className="px-1 pb-2 text-sm font-semibold">{t('addColumn')}</p>
+          <ul className="grid grid-cols-2 gap-1">
+            {COLUMN_TYPES.map((c) => (
+              <li key={c.type}>
+                <button type="button" onClick={async () => { setOpen(false); await d.createColumn(boardId, c.type, lang === 'ar' ? c.ar : c.en, scope); }}
+                  className="flex w-full items-center gap-2 rounded-xs px-2 py-[6px] text-start text-sm hover:bg-surface-hover">
+                  <span className="text-accent">{c.icon}</span>{lang === 'ar' ? c.ar : c.en}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function ColumnHeader({ column, canEdit, compact }: { column: Column; canEdit: boolean; compact?: boolean }) {
+  const { t } = useLang();
+  const d = useData();
+  const toast = useToast();
+  const [renaming, setRenaming] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const cls = clsx('group/col flex items-center justify-center gap-1 border-b border-s border-border px-2 text-xs font-medium text-text-muted', compact ? 'min-h-[32px]' : 'min-h-row');
+  if (renaming) {
+    return (
+      <div role="columnheader" className={cls}>
+        <input autoFocus defaultValue={column.title} aria-label={t('renameColumn')} className="h-7 w-full rounded-xs border border-focus bg-bg px-1 text-center"
+          onBlur={(e) => { setRenaming(false); d.renameColumn(column.id, e.target.value); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(false); }} />
+      </div>
+    );
+  }
+  return (
+    <div role="columnheader" className={cls}>
+      <span className="truncate" title={column.title}>{column.title}</span>
+      {canEdit && (
+        <Dropdown.Root onOpenChange={(o) => { if (!o) setConfirming(false); }}>
+          <Dropdown.Trigger asChild>
+            <IconButton small label={`${t('columnMenu')}: ${column.title}`} className="h-6 w-6 flex-none opacity-0 focus-visible:opacity-100 group-hover/col:opacity-100 data-[state=open]:opacity-100"><Ellipsis size={14} /></IconButton>
+          </Dropdown.Trigger>
+          <Menu>
+            <MenuItem onSelect={() => setRenaming(true)} icon={<Pencil size={15} />}>{t('renameColumn')}</MenuItem>
+            {!confirming ? (
+              <Dropdown.Item onSelect={(e) => { e.preventDefault(); setConfirming(true); }} className="flex cursor-pointer items-center gap-2 rounded-xs px-2 py-[6px] text-sm text-danger outline-none data-[highlighted]:bg-surface-hover">
+                <Trash2 size={15} />{t('deleteColumn')}
+              </Dropdown.Item>
+            ) : (
+              <div className="grid gap-2 p-2">
+                <p className="max-w-[220px] text-xs text-text-muted">{t('deleteColumnConfirm')}</p>
+                <MenuItem danger onSelect={async () => { await d.deleteColumn(column.id); toast({ text: `${t('columnDeleted')}: ${column.title}` }); }} icon={<Trash2 size={15} />}>{t('confirmDelete')}</MenuItem>
+              </div>
+            )}
+          </Menu>
+        </Dropdown.Root>
+      )}
     </div>
   );
 }
@@ -364,7 +540,7 @@ function MenuItem({ children, onSelect, icon, danger }: { children: React.ReactN
 
 // ---------------------------------------------------------------- kanban
 
-function KanbanView({ bundle, visible, members, canEdit }: { bundle: BoardBundle; visible: (i: Item) => boolean; members: Profile[]; canEdit: boolean }) {
+function KanbanView({ bundle, visible, members, canEdit, onOpen }: { bundle: BoardBundle; visible: (i: Item) => boolean; members: Profile[]; canEdit: boolean; onOpen: (id: string) => void }) {
   const { t, locale } = useLang();
   const setCell = useCellSetter();
   const status = bundle.columns.find((c) => c.type === 'status');
@@ -403,7 +579,7 @@ function KanbanView({ bundle, visible, members, canEdit }: { bundle: BoardBundle
                 return (
                   <article key={it.id} draggable={canEdit} onDragStart={(e) => e.dataTransfer.setData('text/plain', it.id)}
                     className={clsx('flex flex-col gap-2 rounded-md bg-surface-raised p-3 text-sm shadow-card', canEdit && 'cursor-grab active:cursor-grabbing')}>
-                    <span className="font-semibold" dir="auto">{it.name}</span>
+                    <button type="button" onClick={() => onOpen(it.id)} className="text-start font-semibold hover:underline" dir="auto">{it.name}</button>
                     <div className="flex items-center justify-between text-text-muted">
                       <span className="tabular-nums">{dv ? new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(dv + 'T12:00:00Z')) : ''}</span>
                       <AvatarStack people={who} />
