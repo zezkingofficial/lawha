@@ -1,7 +1,7 @@
 'use client';
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import clsx from 'clsx';
-import { Bell, CalendarCheck, FolderPlus, House, LayoutGrid, LogOut, Menu as MenuIcon, Moon, Languages, Pencil, Plus, Search, X } from 'lucide-react';
+import { Bell, CalendarCheck, FolderPlus, UsersRound, House, LayoutGrid, LogOut, Menu as MenuIcon, Moon, Languages, Pencil, Plus, Search, X } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useBoards, useData, useMe, useMembers, useWorkspaces } from '@/lib/data/context';
 import type { Profile, Workspace } from '@/lib/data/types';
@@ -10,18 +10,26 @@ import { useRouter } from '@/lib/router';
 import { Avatar, Button, IconButton } from '../ui';
 import { BoardScreen } from '../board/BoardScreen';
 import { Inbox, MyWork, useUnreadCount } from '../personal';
+import { AuthScreen } from '../auth';
+import { Team } from '../team';
 
 // Top-level client app: picks the screen for the current route.
 export function LawhaApp() {
   const { data: me, loading } = useMe();
-  const { route } = useRouter();
+  const d = useData();
+  const { route, go } = useRouter();
+  // a signed-in person who opens an invitation link joins that company
+  useEffect(() => {
+    if (me && route.name === 'invite' && d.auth) d.auth.acceptInvite(route.token).catch(() => {}).finally(() => go({ name: 'home' }));
+  }, [me, route, d, go]);
   if (loading) return null;
-  if (!me) return <SignIn />;
+  if (!me) return d.auth ? <AuthScreen /> : <SignIn />;
   return (
     <Shell me={me}>
       {route.name === 'board' ? <BoardScreen boardId={route.boardId} />
         : route.name === 'mywork' ? <MyWork />
         : route.name === 'inbox' ? <Inbox />
+        : route.name === 'team' ? <Team />
         : <Home />}
     </Shell>
   );
@@ -29,12 +37,13 @@ export function LawhaApp() {
 
 function Shell({ me, children }: { me: Profile; children: ReactNode }) {
   const { t } = useLang();
+  const d = useData();
   const [drawer, setDrawer] = useState(false);
   const { route } = useRouter();
   useEffect(() => setDrawer(false), [route]);
   return (
     <div className="flex min-h-full flex-col">
-      <p className="border-b border-border bg-surface py-1 text-xs text-text-muted" style={{ paddingInline: 'max(16px, env(safe-area-inset-left, 0px))' }}>{t('demoNote')}</p>
+      {!d.auth && <p className="border-b border-border bg-surface py-1 text-xs text-text-muted" style={{ paddingInline: 'max(16px, env(safe-area-inset-left, 0px))' }}>{t('demoNote')}</p>}
       <TopBar me={me} onMenu={() => setDrawer(true)} />
       <div className="grid flex-1 grid-cols-[minmax(0,1fr)] lg:grid-cols-[256px_minmax(0,1fr)]">
         <aside className="hidden border-e border-border bg-sidebar lg:block">
@@ -118,6 +127,7 @@ function Sidebar() {
       <NavButton active={route.name === 'home'} onClick={() => go({ name: 'home' })} icon={<House size={16} />}>{t('home')}</NavButton>
       <NavButton active={route.name === 'mywork'} onClick={() => go({ name: 'mywork' })} icon={<CalendarCheck size={16} />}>{t('myWork')}</NavButton>
       <NavButton active={route.name === 'inbox'} onClick={() => go({ name: 'inbox' })} icon={<Bell size={16} />} hint={<UnreadBadge />}>{t('inbox')}</NavButton>
+      <NavButton active={route.name === 'team'} onClick={() => go({ name: 'team' })} icon={<UsersRound size={16} />}>{t('team')}</NavButton>
       {workspaces.map((w) => <WorkspaceSection key={w.id} ws={w} />)}
       <NewWorkspace />
     </nav>

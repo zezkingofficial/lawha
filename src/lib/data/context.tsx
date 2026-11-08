@@ -1,6 +1,8 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import { browserPersist, createFakeLayer } from './fake';
+import { createSupabaseLayer } from './supabase';
 import type { ActivityEntry, Asset, BoardBundle, DataLayer, MyWorkRow, Notification, Profile, Update, Workspace, Board } from './types';
 
 // Swap point: replica-backend replaces createFakeLayer(...) with the Supabase layer.
@@ -9,7 +11,11 @@ const Ctx = createContext<DataLayer | null>(null);
 export function DataProvider({ children, layer }: { children: ReactNode; layer?: DataLayer }) {
   const [d, setD] = useState<DataLayer | null>(layer ?? null);
   useEffect(() => {
-    if (!layer) setD(createFakeLayer(browserPersist()));
+    if (layer) return;
+    // Real backend when the project's URL and publishable key are configured; the demo layer otherwise.
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    setD(url && key ? createSupabaseLayer(createClient(url, key)) : createFakeLayer(browserPersist()));
   }, [layer]);
   if (!d) return null;
   return <Ctx.Provider value={d}>{children}</Ctx.Provider>;

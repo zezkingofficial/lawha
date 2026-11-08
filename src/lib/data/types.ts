@@ -218,7 +218,29 @@ export interface Place {
   afterId?: string | null;  // item that will come right after
 }
 
+export interface Invite { id: string; email: string; role: Role; token: string; boardId: string | null; expiresAt: string; acceptedAt: string | null }
+export interface InvitePreview { accountName: string; role: Role; email: string; expired: boolean; used: boolean }
+
+// Real accounts (Supabase). The demo layer has no `auth` and uses signIn(userId) instead.
+export interface AuthApi {
+  signUp(input: { fullName: string; company: string; email: string; password: string; inviteToken?: string }): Promise<'signed_in' | 'check_email'>;
+  signIn(email: string, password: string, inviteToken?: string): Promise<void>;
+  sendReset(email: string): Promise<void>;
+  signOut(): Promise<void>;
+  previewInvite(token: string): Promise<InvitePreview | null>;
+  acceptInvite(token: string): Promise<void>;
+  needsCompany(): Promise<boolean>;      // signed in but not in any company yet
+  createCompany(name: string): Promise<void>;
+  // team (admins)
+  invites(): Promise<Invite[]>;
+  createInvite(email: string, role: Role, boardId?: string): Promise<Invite>;
+  revokeInvite(id: string): Promise<void>;
+  setRole(userId: string, role: Role): Promise<void>;
+  removeMember(userId: string): Promise<void>;
+}
+
 export interface DataLayer {
+  auth?: AuthApi;
   // session (Supabase Auth later)
   me(): Promise<Profile | null>;
   signIn(userId: string): Promise<Profile>;

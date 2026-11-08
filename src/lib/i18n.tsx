@@ -52,6 +52,15 @@ const dict = {
     kindShareable: 'الفريق + ضيوف', kindShareableHelp: 'الفريق وناس من برا تضيفهم بالاسم (زي عميل)', kindPrivate: 'خاصة', kindPrivateHelp: 'اللي تضيفهم هنا بس',
     boardMembers: 'أعضاء اللوحة', addMember: 'أضف شخص', roleOwner: 'مالك', roleEditor: 'يعدّل', roleBoardViewer: 'يشوف بس', remove: 'شيل', onlyOwnerShares: 'المالك أو المدير بس اللي يغيّر المشاركة',
     newWorkspace: 'مساحة عمل جديدة', workspaceName: 'اسم المساحة', renameWorkspace: 'إعادة تسمية المساحة', guestBadge: 'ضيف',
+
+    signIn: 'دخول', signUp: 'حساب جديد', email: 'الإيميل', password: 'الباسورد', fullName: 'اسمك', company: 'اسم الشركة',
+    signInTitle2: 'ادخل على حسابك', signUpTitle: 'ابدأ لشركتك', forgot: 'نسيت الباسورد؟', resetSent: 'لو الإيميل ده عندنا، هيوصلك لينك تغيّر بيه الباسورد.',
+    checkEmail: 'بعتنالك إيميل فيه لينك تأكيد. افتحه وبعدين ادخل.', passwordHint: '٨ حروف على الأقل', haveAccount: 'عندك حساب؟', noAccount: 'معندكش حساب؟',
+    wrongLogin: 'الإيميل أو الباسورد غلط', working: 'لحظة…', joinTitle: 'انضم لـ', joinAs: 'هتنضم كـ', inviteFor: 'الدعوة لـ', inviteBad: 'لينك الدعوة ده مش شغال (اتستخدم أو انتهى). اطلب لينك جديد.',
+    needCompanyTitle: 'خطوة أخيرة', needCompanyHelp: 'اكتب اسم شركتك عشان نجهّز لك أول لوحة.', createCompany: 'ابدأ',
+    team: 'الفريق', people: 'الأشخاص', invitePeople: 'دعوة شخص', inviteHelp: 'اكتب إيميله واختار صلاحيته. هيطلع لك لينك تبعته له على واتساب.',
+    role: 'الصلاحية', createLink: 'اعمل لينك الدعوة', copyLink: 'انسخ اللينك', copied: 'اتنسخ', sendWhatsApp: 'ابعت على واتساب', pending: 'دعوات مستنية',
+    revoke: 'إلغاء', expires: 'تنتهي', removePerson: 'شيل من الشركة', demoTeam: 'في النسخة التجريبية مفيش دعوات. ده بيشتغل مع الحساب الحقيقي.', you2: '(انت)',
     items: 'عنصر', sidebarToggle: 'القائمة', closeMenu: 'اقفل القائمة', updates: 'تحديثات', cancel: 'إلغاء', create: 'إنشاء',
   },
   en: {
@@ -102,6 +111,15 @@ const dict = {
     kindShareable: 'Team + guests', kindShareableHelp: 'The team plus outside people you add by name (like a client)', kindPrivate: 'Private', kindPrivateHelp: 'Only the people you add here',
     boardMembers: 'Board members', addMember: 'Add person', roleOwner: 'Owner', roleEditor: 'Can edit', roleBoardViewer: 'Can view', remove: 'Remove', onlyOwnerShares: 'Only the board owner or an admin can change sharing',
     newWorkspace: 'New workspace', workspaceName: 'Workspace name', renameWorkspace: 'Rename workspace', guestBadge: 'Guest',
+
+    signIn: 'Sign in', signUp: 'Create account', email: 'Email', password: 'Password', fullName: 'Your name', company: 'Company name',
+    signInTitle2: 'Sign in to your account', signUpTitle: 'Start for your company', forgot: 'Forgot password?', resetSent: 'If that email is registered, a reset link is on its way.',
+    checkEmail: 'We sent a confirmation link. Open it, then sign in.', passwordHint: 'At least 8 characters', haveAccount: 'Have an account?', noAccount: 'No account yet?',
+    wrongLogin: 'Wrong email or password', working: 'One moment…', joinTitle: 'Join', joinAs: 'You will join as', inviteFor: 'Invitation for', inviteBad: 'This invitation link no longer works (used or expired). Ask for a new one.',
+    needCompanyTitle: 'One last step', needCompanyHelp: 'Enter your company name and we will set up your first board.', createCompany: 'Start',
+    team: 'Team', people: 'People', invitePeople: 'Invite someone', inviteHelp: 'Enter their email and pick a role. You get a link to send them on WhatsApp.',
+    role: 'Role', createLink: 'Create invite link', copyLink: 'Copy link', copied: 'Copied', sendWhatsApp: 'Send on WhatsApp', pending: 'Pending invitations',
+    revoke: 'Revoke', expires: 'Expires', removePerson: 'Remove from company', demoTeam: 'The demo has no invitations. This works with a real account.', you2: '(you)',
     items: 'items', sidebarToggle: 'Menu', closeMenu: 'Close menu', updates: 'updates', cancel: 'Cancel', create: 'Create',
   },
 } as const;
