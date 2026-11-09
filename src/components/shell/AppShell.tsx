@@ -1,13 +1,15 @@
 'use client';
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import clsx from 'clsx';
-import { Bell, CalendarCheck, FolderPlus, UsersRound, House, LayoutGrid, LogOut, Menu as MenuIcon, Moon, Languages, Pencil, Plus, Search, X } from 'lucide-react';
+import { AlarmClock, Bell, CalendarCheck, CalendarClock, CalendarDays, ChevronLeft, FolderPlus, UsersRound, House, LayoutGrid, LogOut, Menu as MenuIcon, Moon, Languages, Pencil, Plus, Search, X } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
-import { useBoards, useData, useMe, useMembers, useWorkspaces } from '@/lib/data/context';
-import type { Profile, Workspace } from '@/lib/data/types';
+import { useBoard, useBoards, useData, useMe, useMembers, useMyWork, useWorkspaces } from '@/lib/data/context';
+import type { Board, Profile, StatusValue, Workspace } from '@/lib/data/types';
+import { labelBg, todayISO } from '@/lib/format';
 import { useLang } from '@/lib/i18n';
 import { useRouter } from '@/lib/router';
 import { Avatar, Button, IconButton } from '../ui';
+import { QuickAddProvider, useQuickAdd } from '../QuickAdd';
 import { BoardScreen } from '../board/BoardScreen';
 import { Inbox, MyWork, useUnreadCount } from '../personal';
 import { AuthScreen } from '../auth';
@@ -41,7 +43,9 @@ function Shell({ me, children }: { me: Profile; children: ReactNode }) {
   const [drawer, setDrawer] = useState(false);
   const { route } = useRouter();
   useEffect(() => setDrawer(false), [route]);
+  useEffect(() => { document.body.classList.add('has-tabbar'); return () => document.body.classList.remove('has-tabbar'); }, []);
   return (
+    <QuickAddProvider>
     <div className="flex min-h-full flex-col">
       {!d.auth && <p className="border-b border-border bg-surface py-1 text-xs text-text-muted" style={{ paddingInline: 'max(16px, env(safe-area-inset-left, 0px))' }}>{t('demoNote')}</p>}
       <TopBar me={me} onMenu={() => setDrawer(true)} />
@@ -58,9 +62,46 @@ function Shell({ me, children }: { me: Profile; children: ReactNode }) {
             </aside>
           </div>
         )}
-        <main className="min-w-0 px-4 pb-10 pt-5 sm:px-6">{children}</main>
+        <main className="min-w-0 px-4 pb-28 pt-4 sm:px-6 sm:pb-10 sm:pt-5">{children}</main>
       </div>
+      <TabBar me={me} onMenu={() => setDrawer(true)} />
     </div>
+    </QuickAddProvider>
+  );
+}
+
+// Phone only: the four places people go most, plus one big button to add.
+function TabBar({ me, onMenu }: { me: Profile; onMenu: () => void }) {
+  const { t } = useLang();
+  const { route, go } = useRouter();
+  const quickAdd = useQuickAdd();
+  const unread = useUnreadCount();
+  const canAdd = me.role !== 'viewer';
+  return (
+    <nav aria-label={t('sidebarToggle')} className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-5 border-t border-border bg-bg sm:hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+      <TabButton active={route.name === 'home'} onClick={() => go({ name: 'home' })} icon={<House size={22} />} label={t('homeTab')} />
+      <TabButton active={route.name === 'mywork'} onClick={() => go({ name: 'mywork' })} icon={<CalendarCheck size={22} />} label={t('myWork')} />
+      <div className="grid place-items-center">
+        {canAdd && (
+          <button type="button" onClick={() => quickAdd()} aria-label={t('quickAdd')}
+            className="-mt-5 grid h-14 w-14 place-items-center rounded-pill bg-accent text-on-accent shadow-pop active:scale-95">
+            <Plus size={28} strokeWidth={2.5} />
+          </button>
+        )}
+      </div>
+      <TabButton active={route.name === 'inbox'} onClick={() => go({ name: 'inbox' })} label={t('inbox')}
+        icon={<span className="relative"><Bell size={22} />{unread > 0 && <span className="absolute -end-2 -top-1 grid h-4 min-w-4 place-items-center rounded-pill bg-danger px-[3px] text-[10px] font-semibold tabular-nums text-on-accent">{unread}</span>}</span>} />
+      <TabButton active={false} onClick={onMenu} icon={<MenuIcon size={22} />} label={t('menuTab')} />
+    </nav>
+  );
+}
+
+function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: ReactNode; label: string }) {
+  return (
+    <button type="button" onClick={onClick} aria-current={active ? 'page' : undefined}
+      className={clsx('flex h-16 flex-col items-center justify-center gap-1 text-[11px] font-medium', active ? 'text-accent' : 'text-text-muted')}>
+      {icon}<span>{label}</span>
+    </button>
   );
 }
 
@@ -76,7 +117,7 @@ function TopBar({ me, onMenu }: { me: Profile; onMenu: () => void }) {
   };
   return (
     <header className="sticky top-0 z-20 flex h-topbar items-center gap-3 border-b border-border bg-bg" style={{ paddingInline: 'max(16px, env(safe-area-inset-left, 0px))' }}>
-      <IconButton label={t('sidebarToggle')} onClick={onMenu} className="lg:hidden"><MenuIcon size={18} /></IconButton>
+      <IconButton label={t('sidebarToggle')} onClick={onMenu} className="hidden sm:inline-grid lg:hidden"><MenuIcon size={18} /></IconButton>
       <button type="button" onClick={() => go({ name: 'home' })} className="flex items-center gap-2 rounded-sm">
         <span className="grid h-7 w-7 place-items-center rounded-sm bg-accent font-bold text-on-accent" aria-hidden>ل</span>
         <span className="text-md font-semibold">{t('app')}</span>
@@ -85,7 +126,7 @@ function TopBar({ me, onMenu }: { me: Profile; onMenu: () => void }) {
         <Search size={16} /><span className="text-sm">{t('search')}</span><span className="ms-auto rounded-xs border border-border-strong px-1 font-mono text-xs">{t('soon')}</span>
       </div>
       <div className="ms-auto flex items-center gap-[2px] md:ms-0">
-        <BellButton />
+        <span className="hidden sm:contents"><BellButton /></span>
         <Dropdown.Root>
           <Dropdown.Trigger asChild>
             <button type="button" aria-label={me.fullName} className="rounded-pill"><Avatar person={me} size={30} /></button>
@@ -196,37 +237,112 @@ function NavButton({ children, active, onClick, icon, disabled, hint }: { childr
 }
 
 function Home() {
-  const { t } = useLang();
+  const { t, locale } = useLang();
+  const { go } = useRouter();
   const { data: me } = useMe();
   const { data: workspaces = [] } = useWorkspaces();
+  const { data: rows = [] } = useMyWork();
+  const today = todayISO(), week = todayISO(7);
+  const open = rows.filter((r) => !r.done);
+  const overdue = open.filter((r) => r.date && r.date < today).length;
+  const dueToday = open.filter((r) => r.date === today).length;
+  const soon = open.filter((r) => r.date && r.date > today && r.date <= week).length;
+  const dayName = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
   return (
-    <div className="mx-auto grid max-w-[900px] gap-6">
+    <div className="mx-auto grid max-w-[960px] gap-6">
       <div>
-        <h1 className="text-xl font-bold">{t('welcome')}، {me?.fullName}</h1>
-        <p className="text-text-muted">{t('homeHelp')}</p>
+        <p className="text-sm text-text-muted">{dayName}</p>
+        <h1 className="text-xl font-bold">{t('welcome')}، {me?.fullName.split(' ')[0]}</h1>
       </div>
+
+      <section aria-labelledby="needs-you" className="grid gap-2">
+        <h2 id="needs-you" className="text-md font-semibold">{t('needsYou')}</h2>
+        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <StatTile n={overdue} label={t('overdueGroup')} tone={overdue ? 'danger' : 'calm'} icon={<AlarmClock size={18} />} onClick={() => go({ name: 'mywork' })} />
+          <StatTile n={dueToday} label={t('todayGroup')} tone={dueToday ? 'accent' : 'calm'} icon={<CalendarClock size={18} />} onClick={() => go({ name: 'mywork' })} />
+          <StatTile n={soon} label={t('weekGroup')} tone="calm" icon={<CalendarDays size={18} />} onClick={() => go({ name: 'mywork' })} />
+        </div>
+        {!overdue && !dueToday && <p className="text-sm text-text-muted">{t('allClear')}</p>}
+      </section>
+
       {workspaces.map((w) => <HomeBoards key={w.id} ws={w} />)}
     </div>
   );
 }
 
+function StatTile({ n, label, tone, icon, onClick }: { n: number; label: string; tone: 'danger' | 'accent' | 'calm'; icon: ReactNode; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} aria-label={`${label}: ${n}`}
+      className={clsx('grid gap-1 rounded-lg border p-3 text-start transition-colors duration-fast sm:p-4',
+        tone === 'danger' ? 'border-transparent bg-danger text-on-accent' : tone === 'accent' ? 'border-transparent bg-accent text-on-accent' : 'border-border bg-bg hover:bg-surface-hover')}>
+      <span className={clsx(tone === 'calm' && 'text-text-muted')}>{icon}</span>
+      <span className="text-[26px] font-bold leading-none tabular-nums">{n}</span>
+      <span className={clsx('truncate text-xs sm:text-sm', tone === 'calm' ? 'text-text-muted' : 'opacity-90')}>{label}</span>
+    </button>
+  );
+}
+
 function HomeBoards({ ws }: { ws: Workspace }) {
   const { data: boards = [] } = useBoards(ws.id);
-  const { go } = useRouter();
+  if (!boards.length) return null;
   return (
-    <section>
+    <section aria-label={ws.name}>
       <h2 className="mb-2 text-md font-semibold">{ws.name}</h2>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
-        {boards.map((b) => (
-          <button key={b.id} type="button" onClick={() => go({ name: 'board', boardId: b.id })}
-            className="grid gap-1 rounded-lg border border-border bg-bg p-4 text-start hover:border-border-strong hover:shadow-card">
-            <LayoutGrid size={18} className="text-accent" />
-            <span className="font-semibold">{b.name}</span>
-            <span className="line-clamp-2 text-sm text-text-muted">{b.description}</span>
-          </button>
-        ))}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))] gap-3">
+        {boards.map((b) => <BoardSummary key={b.id} board={b} />)}
       </div>
     </section>
+  );
+}
+
+// One board at a glance: how many items, how they split by status, how many are late.
+function BoardSummary({ board }: { board: Board }) {
+  const { t } = useLang();
+  const { go } = useRouter();
+  const { data: bundle } = useBoard(board.id);
+  const items = bundle?.items.filter((i) => i.parentItemId === null) ?? [];
+  const status = bundle?.columns.find((c) => c.scope === 'item' && c.type === 'status');
+  const date = bundle?.columns.find((c) => c.scope === 'item' && c.type === 'date');
+  const labels = status?.settings.labels ?? [];
+  const labelOf = (id?: string) => labels.find((l) => l.id === id);
+  const counts = labels.map((l) => ({ l, n: items.filter((i) => (status && (i.vals[status.id] as StatusValue | undefined)?.label_id) === l.id).length })).filter((x) => x.n);
+  const none = items.length - counts.reduce((s, c) => s + c.n, 0);
+  const today = todayISO();
+  const late = date ? items.filter((i) => {
+    const dv = (i.vals[date.id] as { date?: string } | undefined)?.date;
+    return dv && dv < today && !(status && labelOf((i.vals[status.id] as StatusValue | undefined)?.label_id)?.done);
+  }).length : 0;
+  return (
+    <button type="button" onClick={() => go({ name: 'board', boardId: board.id })} aria-label={`${t('openBoard')}: ${board.name}`}
+      className="grid gap-3 rounded-lg border border-border bg-bg p-4 text-start hover:border-border-strong hover:shadow-card">
+      <span className="flex items-center gap-2">
+        <LayoutGrid size={18} className="flex-none text-accent" />
+        <span className="min-w-0 flex-1 truncate font-semibold">{board.name}</span>
+        <ChevronLeft size={16} className="flex-none text-text-subtle ltr:rotate-180" />
+      </span>
+      {!bundle ? <span className="h-10 animate-pulse rounded-sm bg-surface-hover motion-reduce:animate-none" /> : (
+        <>
+          <span className="flex items-baseline gap-2 text-sm">
+            <span className="text-xl font-bold tabular-nums">{items.length}</span>
+            <span className="text-text-muted">{board.itemNoun || t('itemsWord')}</span>
+            {late > 0 && <span className="ms-auto rounded-pill bg-danger px-2 py-[1px] text-xs font-semibold tabular-nums text-on-accent">{late} {t('overdueShort')}</span>}
+          </span>
+          {items.length > 0 ? (
+            <>
+              <span className="flex h-2 overflow-hidden rounded-pill bg-surface-hover" aria-hidden>
+                {counts.map(({ l, n }) => <span key={l.id} style={{ flex: n, background: labelBg(l.color) }} />)}
+                {none > 0 && <span style={{ flex: none }} />}
+              </span>
+              <span className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-muted">
+                {counts.map(({ l, n }) => (
+                  <span key={l.id} className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-pill" style={{ background: labelBg(l.color) }} />{l.name} <b className="font-semibold tabular-nums text-text">{n}</b></span>
+                ))}
+              </span>
+            </>
+          ) : <span className="text-sm text-text-subtle">{t('nothingYet')}</span>}
+        </>
+      )}
+    </button>
   );
 }
 

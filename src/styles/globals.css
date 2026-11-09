@@ -9,3 +9,12 @@ body { margin: 0; -webkit-font-smoothing: antialiased; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 .min-h-row { min-height: var(--row-height); }
+
+/* toasts sit above the phone tab bar */
+.toast-dock { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+@media (max-width: 639px) { .has-tabbar .toast-dock { bottom: calc(80px + env(safe-area-inset-bottom, 0px)); } }
+
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sheet-up { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
+.sheet { animation: sheet-up 180ms cubic-bezier(.2, .8, .2, 1); }
+@media (prefers-reduced-motion: reduce) { .sheet, .animate-\[fade_150ms_ease-out\] { animation: none; } }

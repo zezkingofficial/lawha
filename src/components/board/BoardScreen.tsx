@@ -9,11 +9,12 @@ import { emptySettings } from '@/lib/data/seed';
 import { CellError } from '@/lib/data/validate';
 import { NotAllowed } from '@/lib/data/fake';
 import type { BoardBundle, CellValue, Column, ColumnType, Group, Item, LabelColor, PeopleValue, Profile, StatusValue, NumbersValue, View, ViewSettings, ViewType } from '@/lib/data/types';
-import { fmtNumber, labelBg, labelFg } from '@/lib/format';
+import { fmtDate, fmtNumber, labelBg, labelFg, todayISO } from '@/lib/format';
 import { useLang } from '@/lib/i18n';
 import { useRouter } from '@/lib/router';
 import { applyView, isFiltering } from '@/lib/view';
-import { AvatarStack, Button, IconButton, useToast } from '../ui';
+import { AvatarStack, BottomSheet, Button, IconButton, useIsPhone, useToast } from '../ui';
+import { useQuickAdd } from '../QuickAdd';
 import { AnyCell } from './cells';
 import { CalendarView } from './CalendarView';
 import { ItemPanel } from './ItemPanel';
@@ -36,6 +37,8 @@ export function BoardScreen({ boardId }: { boardId: string }) {
   const [local, setLocal] = useState<Record<string, Partial<ViewSettings>>>({});
   const newItemRef = useRef<HTMLInputElement | null>(null);
   const setCell = useCellSetter();
+  const phone = useIsPhone();
+  const quickAdd = useQuickAdd();
   useEffect(() => { setViewId(null); setQ(''); }, [boardId]);
 
   if (loading && !bundle) return <BoardSkeleton />;
@@ -73,14 +76,14 @@ export function BoardScreen({ boardId }: { boardId: string }) {
       <header className="flex flex-wrap items-center gap-3">
         <div className="min-w-0">
           <EditableTitle value={bundle.board.name} canEdit={canEdit} boardId={boardId} />
-          {bundle.board.description && <p className="mt-[2px] text-sm text-text-muted">{bundle.board.description}</p>}
+          {bundle.board.description && <p className="mt-[2px] line-clamp-1 text-sm text-text-muted sm:line-clamp-none">{bundle.board.description}</p>}
         </div>
         <div className="ms-auto flex items-center gap-2">
           <span className="hidden items-center gap-1 rounded-pill bg-surface-selected px-2 py-[2px] text-xs font-medium text-accent sm:inline-flex" title={t('liveHelp')}>
             <Radio size={12} />{t('liveSync')}
           </span>
           {!canEdit && <span className="rounded-pill bg-surface-hover px-2 py-[2px] text-xs text-text-muted">{t('viewOnly')}</span>}
-          <span aria-label={t('members')}><AvatarStack people={boardPeople} /></span>
+          <span aria-label={t('members')} className="hidden sm:inline"><AvatarStack people={boardPeople} /></span>
           <ShareButton bundle={bundle} members={members} />
         </div>
       </header>
@@ -88,16 +91,25 @@ export function BoardScreen({ boardId }: { boardId: string }) {
       <ViewTabs bundle={bundle} active={view} onPick={(v) => setViewId(v.id)} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {canEdit && view.type === 'table' && (
-          <Button variant="primary" onClick={() => setTimeout(() => newItemRef.current?.focus(), 0)}>
-            <Plus size={16} />{t('newItem')} {bundle.board.itemNoun}
+        {canEdit && (phone || view.type === 'table') && (
+          <Button variant="primary" onClick={() => phone ? quickAdd({ boardId }) : setTimeout(() => newItemRef.current?.focus(), 0)}>
+            <Plus size={16} />{t('add')} {bundle.board.itemNoun}
           </Button>
         )}
-        <BoardToolbar columns={itemCols} members={boardPeople} settings={settings} onChange={changeSettings} query={q} onQuery={setQ} local={!canSaveView} />
-        {canEdit && view.type === 'table' && <AddGroupButton boardId={boardId} />}
+        <BoardToolbar columns={itemCols} members={boardPeople} settings={settings} onChange={changeSettings} query={q} onQuery={setQ} local={!canSaveView} compact={phone} />
+        {canEdit && view.type === 'table' && !phone && <AddGroupButton boardId={boardId} />}
       </div>
 
-      {view.type === 'table' && (
+      {view.type === 'table' && phone && (
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+          {bundle.groups.length === 0 && <p className="text-text-muted">{t('emptyBoard')}</p>}
+          {bundle.groups.map((g) => (
+            <PhoneGroup key={g.id} group={g} bundle={bundle} items={shown.filter((i) => i.groupId === g.id)} members={members}
+              canEdit={canEdit} filtering={filtering} onOpen={openItem} onAdd={() => quickAdd({ boardId, groupId: g.id })} />
+          ))}
+        </div>
+      )}
+      {view.type === 'table' && !phone && (
         <div className="grid grid-cols-[minmax(0,1fr)] gap-7">
           {bundle.groups.length === 0 && <p className="text-text-muted">{t('emptyBoard')}</p>}
           {bundle.groups.map((g, gi) => (
@@ -653,6 +665,101 @@ function MenuItem({ children, onSelect, icon, danger }: { children: React.ReactN
     <Dropdown.Item onSelect={onSelect} className={clsx('flex cursor-pointer items-center gap-2 rounded-xs px-2 py-[6px] text-sm outline-none data-[highlighted]:bg-surface-hover', danger && 'text-danger')}>
       {icon}{children}
     </Dropdown.Item>
+  );
+}
+
+// ---------------------------------------------------------------- phone list
+// On a phone the wide table becomes a list of cards: the name, its status, who and
+// when. Everything else is one tap away in the item card.
+
+function PhoneGroup({ group, bundle, items, members, canEdit, filtering, onOpen, onAdd }: {
+  group: Group; bundle: BoardBundle; items: Item[]; members: Profile[]; canEdit: boolean; filtering: boolean; onOpen: (id: string) => void; onAdd: () => void;
+}) {
+  const { t } = useLang();
+  const [collapsed, setCollapsed] = useState(false);
+  const doneIds = useMemo(() => new Set(bundle.columns.flatMap((c) => (c.settings.labels ?? []).filter((l) => l.done).map((l) => l.id))), [bundle.columns]);
+  return (
+    <section aria-label={group.title} style={{ '--g': labelBg(group.color) } as CSSProperties}>
+      <button type="button" onClick={() => setCollapsed((c) => !c)} aria-expanded={!collapsed}
+        className="mb-2 flex w-full items-center gap-2 py-1 text-start">
+        <ChevronDown size={18} className={clsx('flex-none text-[color:var(--g)] transition-transform duration-base', collapsed && 'rotate-90 rtl:-rotate-90')} />
+        <h2 className="min-w-0 truncate text-md font-semibold" style={{ color: 'var(--g)' }}>{group.title}</h2>
+        <span className="rounded-pill bg-surface-hover px-2 text-xs tabular-nums text-text-muted">{items.length}</span>
+      </button>
+      {!collapsed && (
+        <ul className="grid gap-2">
+          {items.map((it) => <PhoneCard key={it.id} item={it} bundle={bundle} members={members} canEdit={canEdit} doneIds={doneIds} onOpen={onOpen} />)}
+          {items.length === 0 && <li className="rounded-md border border-dashed border-border-strong p-4 text-center text-sm text-text-muted">{filtering ? t('emptyFilter') : t('emptyGroup')}</li>}
+          {canEdit && (
+            <li>
+              <button type="button" onClick={onAdd} className="flex h-11 w-full items-center gap-2 rounded-md px-3 text-sm font-medium text-text-muted hover:bg-surface-hover">
+                <Plus size={16} />{t('addHere')}
+              </button>
+            </li>
+          )}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function PhoneCard({ item, bundle, members, canEdit, doneIds, onOpen }: {
+  item: Item; bundle: BoardBundle; members: Profile[]; canEdit: boolean; doneIds: Set<string>; onOpen: (id: string) => void;
+}) {
+  const { t, locale } = useLang();
+  const setCell = useCellSetter();
+  const [picking, setPicking] = useState(false);
+  const cols = bundle.columns.filter((c) => c.scope === 'item');
+  const status = cols.find((c) => c.type === 'status');
+  const people = cols.find((c) => c.type === 'people');
+  const date = cols.find((c) => c.type === 'date');
+  const num = cols.find((c) => c.type === 'numbers');
+  const label = status && (status.settings.labels ?? []).find((l) => l.id === (item.vals[status.id] as StatusValue | undefined)?.label_id);
+  const who = ((people && (item.vals[people.id] as PeopleValue | undefined)?.user_ids) || []).map((id) => members.find((m) => m.id === id)).filter(Boolean) as Profile[];
+  const dv = date && (item.vals[date.id] as { date?: string } | undefined)?.date;
+  const late = !!dv && dv < todayISO() && !(label && doneIds.has(label.id));
+  const nv = num && (item.vals[num.id] as NumbersValue | undefined)?.number;
+  const subs = bundle.items.filter((i) => i.parentItemId === item.id).length;
+  const updates = bundle.updateCounts[item.id] ?? 0;
+  return (
+    <li className="flex overflow-hidden rounded-md border border-border bg-bg">
+      <span className="w-1 flex-none bg-[color:var(--g)]" aria-hidden />
+      <button type="button" onClick={() => onOpen(item.id)} className="grid min-w-0 flex-1 content-start gap-2 p-3 text-start active:bg-surface-hover">
+        <span className="line-clamp-2 font-medium" dir="auto">{item.name}</span>
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
+          {dv && <span className={clsx('inline-flex items-center gap-1 tabular-nums', late && 'font-semibold text-danger')}><Calendar size={13} />{fmtDate(dv, locale)}{late && ` · ${t('overdue')}`}</span>}
+          {nv && <span className="tabular-nums"><bdi>{fmtNumber(nv, locale)}</bdi> {num?.settings.unit}</span>}
+          {subs > 0 && <span className="inline-flex items-center gap-1"><ListChecks size={13} />{subs}</span>}
+          {updates > 0 && <span className="inline-flex items-center gap-1 text-accent"><MessageSquare size={13} />{updates}</span>}
+        </span>
+      </button>
+      <div className="flex flex-none flex-col items-end justify-between gap-2 py-3 pe-3">
+        {status && (
+          <button type="button" disabled={!canEdit} onClick={() => setPicking(true)} aria-label={`${t('changeStatus')}: ${label?.name ?? t('noStatus')}`}
+            className="h-8 min-w-[92px] max-w-[130px] truncate rounded-sm px-2 text-xs font-semibold disabled:cursor-default"
+            style={{ background: labelBg(label?.color ?? 'empty'), color: labelFg(label?.color ?? 'empty') }}>
+            {label?.name ?? '—'}
+          </button>
+        )}
+        {who.length > 0 && <AvatarStack people={who} size={24} />}
+      </div>
+      {status && (
+        <BottomSheet open={picking} onClose={() => setPicking(false)} title={`${t('changeStatus')}: ${item.name}`}>
+          <ul className="grid gap-2">
+            {(status.settings.labels ?? []).map((l) => (
+              <li key={l.id}>
+                <button type="button" aria-pressed={label?.id === l.id} onClick={() => { setPicking(false); setCell(item, status, { label_id: l.id }); }}
+                  className={clsx('h-12 w-full rounded-md text-md font-semibold', label?.id === l.id && 'shadow-[0_0_0_2px_var(--c-bg),0_0_0_4px_var(--c-text)]')}
+                  style={{ background: labelBg(l.color), color: labelFg(l.color) }}>{l.name}</button>
+              </li>
+            ))}
+            {label && (
+              <li><button type="button" onClick={() => { setPicking(false); setCell(item, status, null); }} className="h-11 w-full rounded-md border border-border-strong text-sm">{t('clear')}</button></li>
+            )}
+          </ul>
+        </BottomSheet>
+      )}
+    </li>
   );
 }
 

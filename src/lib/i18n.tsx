@@ -62,6 +62,12 @@ const dict = {
     role: 'الصلاحية', createLink: 'اعمل لينك الدعوة', copyLink: 'انسخ اللينك', copied: 'اتنسخ', sendWhatsApp: 'ابعت على واتساب', pending: 'دعوات مستنية',
     revoke: 'إلغاء', expires: 'تنتهي', removePerson: 'شيل من الشركة', demoTeam: 'في النسخة التجريبية مفيش دعوات. ده بيشتغل مع الحساب الحقيقي.', you2: '(انت)',
     items: 'عنصر', sidebarToggle: 'القائمة', closeMenu: 'اقفل القائمة', updates: 'تحديثات', cancel: 'إلغاء', create: 'إنشاء',
+
+    add: 'إضافة', addAndNext: 'إضافة وكمّل', added: 'اتضاف', namePh: 'اكتب الاسم', groupLabel: 'المجموعة', boardLabel: 'اللوحة',
+    otherDate: 'تاريخ تاني', me: 'أنا', moreFields: 'تفاصيل أكتر', lessFields: 'تفاصيل أقل', noEditBoards: 'مفيش لوحة تقدر تضيف فيها.',
+    quickAdd: 'إضافة سريعة', changeStatus: 'غيّر الحالة', noStatus: 'من غير حالة', needsYou: 'محتاج منك', boardsOverview: 'اللوح بنظرة',
+    allClear: 'مفيش حاجة متأخرة ولا مطلوبة النهارده.', overdueShort: 'متأخر', openBoard: 'افتح اللوحة', fixValue: 'صحّح القيمة دي',
+    homeTab: 'الرئيسية', menuTab: 'المزيد', itemsWord: 'عنصر', nothingYet: 'لسه مفيش عناصر', addHere: 'أضف هنا',
   },
   en: {
     app: 'Lawha',
@@ -121,6 +127,12 @@ const dict = {
     role: 'Role', createLink: 'Create invite link', copyLink: 'Copy link', copied: 'Copied', sendWhatsApp: 'Send on WhatsApp', pending: 'Pending invitations',
     revoke: 'Revoke', expires: 'Expires', removePerson: 'Remove from company', demoTeam: 'The demo has no invitations. This works with a real account.', you2: '(you)',
     items: 'items', sidebarToggle: 'Menu', closeMenu: 'Close menu', updates: 'updates', cancel: 'Cancel', create: 'Create',
+
+    add: 'Add', addAndNext: 'Add and next', added: 'Added', namePh: 'Type a name', groupLabel: 'Group', boardLabel: 'Board',
+    otherDate: 'Other date', me: 'Me', moreFields: 'More fields', lessFields: 'Fewer fields', noEditBoards: 'There is no board you can add to.',
+    quickAdd: 'Quick add', changeStatus: 'Change status', noStatus: 'No status', needsYou: 'Needs you', boardsOverview: 'Boards at a glance',
+    allClear: 'Nothing overdue or due today.', overdueShort: 'overdue', openBoard: 'Open board', fixValue: 'Fix this value',
+    homeTab: 'Home', menuTab: 'More', itemsWord: 'items', nothingYet: 'No items yet', addHere: 'Add here',
   },
 } as const;
 

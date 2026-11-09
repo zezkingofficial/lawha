@@ -8,7 +8,7 @@ import { CellError } from '@/lib/data/validate';
 import type { Asset, BoardBundle, Column, Item, NewFile, Profile, Update } from '@/lib/data/types';
 import { readFile } from '@/lib/files';
 import { useLang } from '@/lib/i18n';
-import { Avatar, IconButton, useToast } from '../ui';
+import { Avatar, IconButton, useIsPhone, useToast } from '../ui';
 import { AnyCell } from './cells';
 
 type Tab = 'updates' | 'details' | 'files' | 'activity';
@@ -16,7 +16,10 @@ type Tab = 'updates' | 'details' | 'files' | 'activity';
 export function ItemPanel({ bundle, itemId, onClose, canEdit }: { bundle: BoardBundle; itemId: string; onClose: () => void; canEdit: boolean }) {
   const { t } = useLang();
   const item = bundle.items.find((i) => i.id === itemId);
-  const [tab, setTab] = useState<Tab>('updates');
+  const phone = useIsPhone();
+  // on a phone the fields come first: that is what people open an item to change
+  const [tab, setTab] = useState<Tab>(() => (phone ? 'details' : 'updates'));
+  const tabs: Tab[] = phone ? ['details', 'updates', 'files', 'activity'] : ['updates', 'details', 'files', 'activity'];
   const closeRef = useRef<HTMLButtonElement>(null);
   const opener = useRef<Element | null>(null);
 
@@ -51,7 +54,7 @@ export function ItemPanel({ bundle, itemId, onClose, canEdit }: { bundle: BoardB
               <IconButton ref={closeRef} label={t('close')} onClick={onClose}><X size={18} /></IconButton>
             </header>
             <div role="tablist" className="flex gap-1 overflow-x-auto border-b border-border px-3">
-              {(['updates', 'details', 'files', 'activity'] as Tab[]).map((k) => (
+              {tabs.map((k) => (
                 <button key={k} type="button" role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
                   className={clsx('-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm', tab === k ? 'border-accent font-semibold' : 'border-transparent text-text-muted hover:text-text')}>
                   {t(k === 'updates' ? 'updates' : k === 'details' ? 'details' : k === 'files' ? 'files' : 'activity')}

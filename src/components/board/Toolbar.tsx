@@ -32,9 +32,9 @@ function ToolPop({ icon, label, active, count, children, width = 320 }: { icon: 
   );
 }
 
-export function BoardToolbar({ columns, members, settings, onChange, query, onQuery, local }: {
+export function BoardToolbar({ columns, members, settings, onChange, query, onQuery, local, compact }: {
   columns: Column[]; members: Profile[]; settings: ViewSettings; onChange: (patch: Partial<ViewSettings>) => void;
-  query: string; onQuery: (q: string) => void; local: boolean;
+  query: string; onQuery: (q: string) => void; local: boolean; compact?: boolean;
 }) {
   const { t } = useLang();
   const filterable = columns.filter((c) => c.scope === 'item');
@@ -121,6 +121,7 @@ export function BoardToolbar({ columns, members, settings, onChange, query, onQu
         )}
       </ToolPop>
 
+      {!compact && <>
       <ToolPop icon={<ArrowDownUp size={16} />} label={t('sort')} active={!!settings.sort} width={280}>
         <label className="grid gap-1 text-sm">{t('sortBy')}
           <select className={field} value={settings.sort?.columnId ?? ''} onChange={(e) => onChange({ sort: e.target.value ? { columnId: e.target.value, dir: settings.sort?.dir ?? 'asc' } : null })}>
@@ -156,6 +157,7 @@ export function BoardToolbar({ columns, members, settings, onChange, query, onQu
         </ul>
         {settings.hiddenColumnIds.length > 0 && <button type="button" onClick={() => onChange({ hiddenColumnIds: [] })} className="text-start text-sm text-accent">{t('showAll')}</button>}
       </ToolPop>
+      </>}
 
       {anyActive && (
         <Button variant="ghost" size="sm" onClick={() => { onQuery(''); onChange({ filters: [], personId: null, sort: null, hiddenColumnIds: [] }); }}>{t('clearFilters')}</Button>
