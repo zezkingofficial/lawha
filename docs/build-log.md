@@ -23,6 +23,30 @@ Data: Supabase (`src/lib/data/supabase.ts`) when the env vars are set; the in-br
 | S12 kanban | 2026-11-08 | done | — | HTML drag does not work on touch screens, so each card also has a "move to" select (works on phones and with a keyboard). |
 | live sync | 2026-11-08 | partial | across devices needs Supabase Realtime | BroadcastChannel alone dropped some updates between tabs in testing; added the `storage` event as a second signal. 8/8 runs pass after. |
 
+## Phone first (2026-11-10)
+
+The owner said that adding data on a phone was hard, that too many details pulled his attention away, and that he couldn't see everything at a glance. Changes (commit `a14603c`, live):
+
+- **Bottom tab bar** on phones: home, my work, a large **+**, inbox, more (opens the drawer). The top bar keeps only the logo and the avatar.
+- **Quick add sheet** (`src/components/QuickAdd.tsx`), reached from the + button, «إضافة <noun>» on the board, or «أضف هنا» under a group:
+  - a name field
+  - tap choices for status, people and date (today, tomorrow, next week, or another date)
+  - the first two number columns
+  - text, phone and dropdown columns under «تفاصيل أكتر»
+  - «إضافة وكمّل» adds the item, keeps the sheet open and keeps the chosen status
+  - values are checked before the item is created, so a wrong value never leaves a half-filled item behind
+- **Board on phones = cards**: each card shows the name, status, date (red when late), owners, the first amount, subitem count and update count. Tapping the status opens a sheet of large buttons. The wide table stays on desktop and tablet.
+- **Overview home**:
+  - three tiles for the items that need you: overdue, today, the next 7 days
+  - every board with its item count, a status split bar with counts, and a late count
+- Item card opens on **Details** on phones. Sort and hide-columns are hidden on phones because cards have no columns to sort or hide.
+
+Checks: typecheck · 29/29 unit · new phone suite 10/10 (demo build, 390 px, touch) · earlier suites e2e/e2e2/e2e3 pass (e2e now opens the drawer from «المزيد») · `next build` · live on the real database at 390 px: sign up → home, quick add with status/person/date/quantity, reload keeps it, status sheet, no sideways scroll.
+
+Harder than expected:
+- The number fields in the sheet overflowed: an `<input>` keeps its default width inside a grid item until it gets `w-0 flex-1`.
+- Autofocus in the sheet had to move into the form, because the board loads after the sheet opens.
+
 ## Backend (2026-11-08)
 
 - Migrations 0002–0004 tested locally against Postgres with Supabase stand-ins, then run by the owner in the SQL Editor.
