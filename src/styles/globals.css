@@ -18,3 +18,7 @@ button:disabled { cursor: not-allowed; }
 @keyframes sheet-up { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
 .sheet { animation: sheet-up 180ms cubic-bezier(.2, .8, .2, 1); }
 @media (prefers-reduced-motion: reduce) { .sheet, .animate-\[fade_150ms_ease-out\] { animation: none; } }
+
+/* the thing being dragged stays in place, faded, until it lands */
+[data-dragging]:not(.contents), .contents[data-dragging] > * { opacity: .35; }
+.no-callout { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }

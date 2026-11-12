@@ -3,6 +3,7 @@ import { generateKeyBetween } from 'fractional-indexing';
 import { DEFAULT_LABELS, emptySettings } from './seed';
 import { NotAllowed } from './fake';
 import { CellError, validateCell } from './validate';
+import { keyForSlot } from './order';
 import type {
   Account, ActivityEntry, Asset, AuthApi, Board, BoardBundle, BoardMember, CellValue, Column, ColumnType, DataLayer, Group, Invite,
   Item, MyWorkRow, NewFile, Notification, Place, Profile, Role, StatusValue, Update, View, ViewSettings, Workspace,
@@ -499,6 +500,37 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       const [a, b] = dir === 'up' ? [l[j - 1], l[j]] : [l[j], l[j + 1]];
       const { error } = await sb.from('groups').update({ position: generateKeyBetween(a?.position ?? null, b?.position ?? null) }).eq('id', id);
       fail(error);
+    },
+    // order changes from dragging: change the open board now, save after, undo if refused
+    async placeGroup(id, to) {
+      const owner = [...cache.values()].find((b) => b.groups.some((g) => g.id === id));
+      if (!owner) {
+        const { data: g } = await sb.from('groups').select('board_id').eq('id', id).single();
+        const { data: list } = await sb.from('groups').select('id, position').eq('board_id', g!.board_id).is('deleted_at', null).order('position');
+        const { error } = await sb.from('groups').update({ position: keyForSlot(list ?? [], id, to) }).eq('id', id);
+        fail(error); refreshOpen(); return;
+      }
+      const position = keyForSlot(owner.groups, id, to);
+      cache.set(owner.board.id, { ...owner, groups: owner.groups.map((g) => (g.id === id ? { ...g, position } : g)).sort(byPos) });
+      emit(owner.board.id);
+      try { const { error } = await track(Promise.resolve(sb.from('groups').update({ position }).eq('id', id))); fail(error); }
+      catch (e) { refresh(owner.board.id); throw e; }
+    },
+    async placeColumn(id, to) {
+      const owner = [...cache.values()].find((b) => b.columns.some((c) => c.id === id));
+      if (!owner) {
+        const { data: c } = await sb.from('columns').select('board_id, scope').eq('id', id).single();
+        const { data: list } = await sb.from('columns').select('id, position').eq('board_id', c!.board_id).eq('scope', c!.scope).order('position');
+        const { error } = await sb.from('columns').update({ position: keyForSlot(list ?? [], id, to) }).eq('id', id);
+        fail(error); refreshOpen(); return;
+      }
+      const col = owner.columns.find((c) => c.id === id)!;
+      if (!owner.canEdit) throw new NotAllowed('view only');
+      const position = keyForSlot(owner.columns.filter((c) => c.scope === col.scope), id, to);
+      cache.set(owner.board.id, { ...owner, columns: owner.columns.map((c) => (c.id === id ? { ...c, position } : c)).sort(byPos) });
+      emit(owner.board.id);
+      try { const { error, count } = await track(Promise.resolve(sb.from('columns').update({ position }, { count: 'exact' }).eq('id', id))); fail(error); if (count === 0) throw new NotAllowed('view only'); }
+      catch (e) { refresh(owner.board.id); throw e; }
     },
     async setGroupColor(id, color) { const { error } = await sb.from('groups').update({ color }).eq('id', id); fail(error); },
 

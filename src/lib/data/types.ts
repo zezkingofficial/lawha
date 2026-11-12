@@ -212,6 +212,8 @@ export interface BoardBundle {
   canAdmin: boolean;                    // can I change sharing and board settings
 }
 
+export interface Slot { beforeId?: string | null; afterId?: string | null }
+
 export interface Place {
   groupId: string;
   beforeId?: string | null; // item that will come right before
@@ -271,6 +273,10 @@ export interface DataLayer {
   deleteGroup(groupId: string): Promise<void>;
   restoreGroup(groupId: string): Promise<void>;
   moveGroup(groupId: string, dir: 'up' | 'down'): Promise<void>;
+  /** Drop a group between two others (ids of the groups that end up right before / after it). */
+  placeGroup(groupId: string, to: Slot): Promise<void>;
+  /** Drop a column between two others, same rule. */
+  placeColumn(columnId: string, to: Slot): Promise<void>;
   setGroupColor(groupId: string, color: LabelColor): Promise<void>;
 
   // items

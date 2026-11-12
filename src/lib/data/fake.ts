@@ -1,4 +1,5 @@
 import { generateKeyBetween } from 'fractional-indexing';
+import { keyForSlot } from './order';
 import { makeSeed, DEFAULT_LABELS, DB_VERSION, emptySettings, type DB } from './seed';
 import { validateCell } from './validate';
 import type { ActivityEntry, Asset, Board, BoardBundle, View, Workspace, CellValue, Column, ColumnType, DataLayer, Group, Item, MyWorkRow, NewFile, NotificationKind, Place, Profile, StatusValue, Update } from './types';
@@ -535,6 +536,21 @@ export function createFakeLayer(persist: Persist): DataLayer {
       const [a, b2] = dir === 'up' ? [list[j - 1], list[j]] : [list[j], list[j + 1]];
       g.position = generateKeyBetween(a?.position ?? null, b2?.position ?? null);
       commit([g.boardId]);
+    },
+    async placeGroup(groupId, to) {
+      const g = db.groups.find((x) => x.id === groupId);
+      if (!g) return;
+      guard(g.boardId);
+      g.position = keyForSlot(db.groups.filter((x) => x.boardId === g.boardId && !x.deletedAt).sort(byPos), groupId, to);
+      commit([g.boardId]);
+    },
+    async placeColumn(columnId, to) {
+      canEdit();
+      const c = db.columns.find((x) => x.id === columnId);
+      if (!c) return;
+      guard(c.boardId);
+      c.position = keyForSlot(db.columns.filter((x) => x.boardId === c.boardId && x.scope === c.scope).sort(byPos), columnId, to);
+      commit([c.boardId]);
     },
     async setGroupColor(groupId, color) {
       const g = db.groups.find((x) => x.id === groupId);

@@ -3,19 +3,20 @@ import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import * as Popover from '@radix-ui/react-popover';
 import clsx from 'clsx';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, Columns3, Ellipsis, FolderInput, GripVertical, LayoutGrid, MessageSquare, Palette, Plus, Table2, Trash2, Pencil, CalendarDays, Radio, CircleDot, Users, Calendar, Type, Hash, AlignRight, ListChecks, SquareCheck, Phone, GanttChart, Paperclip, Link2, Mail, Maximize2 } from 'lucide-react';
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useBoard, useData, useMe, useMembers } from '@/lib/data/context';
 import { emptySettings } from '@/lib/data/seed';
 import { CellError } from '@/lib/data/validate';
 import { NotAllowed } from '@/lib/data/fake';
-import type { BoardBundle, CellValue, Column, ColumnType, Group, Item, LabelColor, PeopleValue, Profile, StatusValue, NumbersValue, View, ViewSettings, ViewType } from '@/lib/data/types';
+import type { BoardBundle, CellValue, Column, ColumnType, DataLayer, Group, Item, LabelColor, PeopleValue, Profile, StatusValue, NumbersValue, View, ViewSettings, ViewType } from '@/lib/data/types';
 import { fmtDate, fmtNumber, labelBg, labelFg, todayISO } from '@/lib/format';
 import { useLang } from '@/lib/i18n';
 import { useRouter } from '@/lib/router';
 import { applyView, isFiltering } from '@/lib/view';
 import { AvatarStack, BottomSheet, Button, IconButton, useIsPhone, useToast } from '../ui';
 import { useQuickAdd } from '../QuickAdd';
-import { AnyCell } from './cells';
+import { AnyCell, DueMark, dueState, dueText } from './cells';
+import { beginDrag } from './drag';
 import { CalendarView } from './CalendarView';
 import { ItemPanel } from './ItemPanel';
 import { ShareButton } from './ShareDialog';
@@ -40,6 +41,13 @@ export function BoardScreen({ boardId }: { boardId: string }) {
   const phone = useIsPhone();
   const quickAdd = useQuickAdd();
   useEffect(() => { setViewId(null); setQ(''); }, [boardId]);
+  // while a group is dragged every group folds to its header, so the list is short and quick to move through
+  const [groupDrag, setGroupDrag] = useState<{ id: string; y: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!groupDrag) return;
+    const h = document.querySelector<HTMLElement>(`[data-drag-group="${groupDrag.id}"]`);
+    if (h) scrollBy(0, h.getBoundingClientRect().top - groupDrag.y); // keep the grabbed header under the pointer
+  }, [groupDrag]);
 
   if (loading && !bundle) return <BoardSkeleton />;
   if (!bundle) {
@@ -72,7 +80,7 @@ export function BoardScreen({ boardId }: { boardId: string }) {
   const boardPeople = members.filter((m) => m.role !== 'guest' || bundle.members.some((bm) => bm.userId === m.id));
 
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" data-board-root>
       <header className="flex flex-wrap items-center gap-3">
         <div className="min-w-0">
           <EditableTitle value={bundle.board.name} canEdit={canEdit} boardId={boardId} />
@@ -105,7 +113,7 @@ export function BoardScreen({ boardId }: { boardId: string }) {
           {bundle.groups.length === 0 && <p className="text-text-muted">{t('emptyBoard')}</p>}
           {bundle.groups.map((g) => (
             <PhoneGroup key={g.id} group={g} bundle={bundle} items={shown.filter((i) => i.groupId === g.id)} members={members}
-              canEdit={canEdit} filtering={filtering} onOpen={openItem} onAdd={() => quickAdd({ boardId, groupId: g.id })} />
+              canEdit={canEdit} filtering={filtering} sorted={!!settings.sort} onOpen={openItem} onAdd={() => quickAdd({ boardId, groupId: g.id })} />
           ))}
         </div>
       )}
@@ -115,7 +123,8 @@ export function BoardScreen({ boardId }: { boardId: string }) {
           {bundle.groups.map((g, gi) => (
             <GroupSection key={g.id} group={g} groups={bundle.groups} bundle={bundle} items={shown.filter((i) => i.groupId === g.id)}
               cols={visibleCols} filtering={filtering} sorted={!!settings.sort} members={members} me={me ?? null} canEdit={canEdit}
-              addRef={gi === 0 ? newItemRef : undefined} onOpen={openItem} first={gi === 0} last={gi === bundle.groups.length - 1} />
+              addRef={gi === 0 ? newItemRef : undefined} onOpen={openItem} first={gi === 0} last={gi === bundle.groups.length - 1}
+              folded={!!groupDrag} onGroupDrag={setGroupDrag} />
           ))}
         </div>
       )}
@@ -228,19 +237,42 @@ function gridTemplate(columns: Column[]): CSSProperties {
 
 const GROUP_COLORS: LabelColor[] = ['blue', 'green', 'orange', 'red', 'purple', 'teal', 'pink', 'navy', 'brown', 'grey', 'yellow', 'lime'];
 
-// drag payload for rows (HTML drag on desktop; the row menu covers touch and keyboard)
-const ROW_MIME = 'application/x-lawha-item';
+// Drag a row (desktop table) or a card (phone) anywhere in the board, into any group.
+// Targets are the rows' name cells / the cards, plus each group's last line for "at the end".
+function dragItem(e: React.PointerEvent<HTMLElement>, itemId: string, d: DataLayer, onError: (e: unknown) => void, kind: 'row' | 'card') {
+  const rowEl = e.currentTarget;
+  const root = rowEl.closest<HTMLElement>('[data-board-root]') ?? document.body;
+  const sel = kind === 'row' ? '[data-drag-row]' : '[data-drag-card]';
+  const source = kind === 'row' ? rowEl.querySelector<HTMLElement>('[data-drag-row]') : rowEl;
+  if (!source) return;
+  beginDrag(e, {
+    axis: 'y', id: itemId, source, dim: rowEl,
+    targets: () => [...root.querySelectorAll<HTMLElement>(`${sel}, [data-drop-end]`)],
+    idOf: (el) => el.dataset.dragRow ?? el.dataset.dragCard ?? `end:${el.dataset.dropEnd}`,
+    lineBox: (el) => (el.closest<HTMLElement>('[role="grid"]') ?? el).getBoundingClientRect(),
+    onDrop: (to) => {
+      if (!to) return;
+      const place = to.id.startsWith('end:') ? { groupId: to.id.slice(4) }
+        : to.side === 'before' ? { groupId: to.el.dataset.group!, afterId: to.id } : { groupId: to.el.dataset.group!, beforeId: to.id };
+      d.moveItem(itemId, place).catch(onError);
+    },
+    settle: () => {
+      const r = root.querySelector<HTMLElement>(`[data-row-id="${itemId}"]`);
+      return r ? (r.classList.contains('contents') ? [...r.children] as HTMLElement[] : [r]) : [];
+    },
+  });
+}
 
-function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, members, me, canEdit, addRef, onOpen, first, last }: {
+function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, members, me, canEdit, addRef, onOpen, first, last, folded, onGroupDrag }: {
   group: Group; groups: Group[]; bundle: BoardBundle; items: Item[]; cols: Column[]; filtering: boolean; sorted: boolean;
   members: Profile[]; me: Profile | null; canEdit: boolean; addRef?: React.Ref<HTMLInputElement>; onOpen: (id: string) => void; first: boolean; last: boolean;
+  folded: boolean; onGroupDrag: (g: { id: string; y: number } | null) => void;
 }) {
   const { t, locale } = useLang();
   const d = useData();
   const toast = useToast();
   const [collapsed, setCollapsed] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [dropOn, setDropOn] = useState<string | null>(null);
   const shown = items;
   const allCols = bundle.columns.filter((c) => c.scope === 'item');
   const doneIds = useMemo(() => new Set(allCols.flatMap((c) => (c.settings.labels ?? []).filter((l) => l.done).map((l) => l.id))), [allCols]);
@@ -255,23 +287,41 @@ function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, m
     await d.deleteGroup(group.id);
     toast({ text: `${t('deleted')}: ${group.title}`, undo: () => d.restoreGroup(group.id) });
   };
-  const dropRow = async (e: React.DragEvent, beforeItemId: string | null) => {
-    const id = e.dataTransfer.getData(ROW_MIME);
-    setDropOn(null);
-    if (!id || id === beforeItemId) return;
-    e.preventDefault();
-    await d.moveItem(id, beforeItemId ? { groupId: group.id, afterId: beforeItemId } : { groupId: group.id });
+  const onError = (e: unknown) => toast({ tone: 'error', text: e instanceof NotAllowed ? t('viewOnlyError') : (e as Error).message });
+  // drag the group by its header; all groups fold while it moves
+  const dragGroup = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canEdit || renaming) return;
+    const header = e.currentTarget;
+    const root = header.closest<HTMLElement>('[data-board-root]') ?? document.body;
+    beginDrag(e, {
+      axis: 'y', id: group.id, source: header,
+      targets: () => [...root.querySelectorAll<HTMLElement>('[data-drag-group]')],
+      idOf: (el) => el.dataset.dragGroup ?? '',
+      onStart: (p) => onGroupDrag({ id: group.id, y: p.y - p.grabY }),
+      onDrop: (to) => { if (to) d.placeGroup(group.id, to.side === 'before' ? { afterId: to.id } : { beforeId: to.id }).catch(onError); },
+      onEnd: () => onGroupDrag(null),
+      settle: () => { const h = root.querySelector<HTMLElement>(`[data-drag-group="${group.id}"]`); return h ? [h] : []; },
+    });
   };
-  const dragOver = (e: React.DragEvent, key: string) => {
-    if (!dragEnabled || !e.dataTransfer.types.includes(ROW_MIME)) return;
-    e.preventDefault();
-    setDropOn(key);
+  const dragColumn = (e: React.PointerEvent<HTMLDivElement>, columnId: string) => {
+    if (!canEdit) return;
+    const head = e.currentTarget;
+    const grid = head.closest<HTMLElement>('[role="grid"]')!;
+    beginDrag(e, {
+      axis: 'x', id: columnId, source: head, scroller: grid.parentElement,
+      targets: () => [...grid.querySelectorAll<HTMLElement>('[data-drag-col]')],
+      idOf: (el) => el.dataset.dragCol ?? '',
+      lineBox: () => grid.getBoundingClientRect(),
+      onDrop: (to) => { if (to) d.placeColumn(columnId, to.side === 'before' ? { afterId: to.id } : { beforeId: to.id }).catch(onError); },
+      settle: () => [...grid.querySelectorAll<HTMLElement>(`[data-col="${columnId}"]`)],
+    });
   };
 
   return (
     <section aria-label={group.title} style={{ '--g': labelBg(group.color) } as CSSProperties}>
-      <div className="flex h-10 items-center gap-2">
-        <IconButton label={collapsed ? t('expand') : t('collapse')} onClick={() => setCollapsed((c) => !c)} className="!text-[color:var(--g)]">
+      <div className={clsx('flex h-10 items-center gap-2 rounded-sm', canEdit && !renaming && 'cursor-grab active:cursor-grabbing', folded && 'border border-border bg-bg pe-2')}
+        data-drag-group={group.id} onPointerDown={dragGroup}>
+        <IconButton label={collapsed ? t('expand') : t('collapse')} onClick={() => setCollapsed((c) => !c)} className="!text-[color:var(--g)]" data-no-drag>
           <ChevronDown size={16} className={clsx('transition-transform duration-base', collapsed && 'rotate-90 rtl:-rotate-90')} />
         </IconButton>
         {renaming ? (
@@ -284,7 +334,7 @@ function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, m
         <span className="text-sm tabular-nums text-text-subtle">{shown.length} {t('items')}</span>
         {canEdit && (
           <Dropdown.Root>
-            <Dropdown.Trigger asChild><IconButton label={t('groupMenu')}><Ellipsis size={16} /></IconButton></Dropdown.Trigger>
+            <Dropdown.Trigger asChild><IconButton label={t('groupMenu')} data-no-drag><Ellipsis size={16} /></IconButton></Dropdown.Trigger>
             <Menu>
               <MenuItem onSelect={() => setRenaming(true)} icon={<Pencil size={15} />}>{t('renameGroup')}</MenuItem>
               {!first && <MenuItem onSelect={() => d.moveGroup(group.id, 'up')} icon={<ArrowUp size={15} />}>{t('moveUp')}</MenuItem>}
@@ -310,14 +360,14 @@ function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, m
         {canEdit && sorted && <span className="text-xs text-text-subtle">{t('sortedNoDrag')}</span>}
       </div>
 
-      {!collapsed && (
+      {!collapsed && !folded && (
         <div className="overflow-x-auto rounded-md">
           <div role="grid" aria-label={group.title} aria-rowcount={shown.length + 1}
             className="grid overflow-clip rounded-md border border-border bg-bg [--name-col:180px] sm:[--name-col:320px]" style={{ ...style, minWidth }}>
             <div role="row" className="contents">
               <div className="sticky start-0 z-[1] bg-[color:var(--g)]" />
               <HeadCell start>{t('item')}</HeadCell>
-              {cols.map((c) => <ColumnHeader key={c.id} column={c} canEdit={canEdit} />)}
+              {cols.map((c) => <ColumnHeader key={c.id} column={c} canEdit={canEdit} onDragStart={canEdit ? (e) => dragColumn(e, c.id) : undefined} />)}
               <div className="flex min-h-row items-center justify-center border-b border-s border-border">
                 {canEdit && <AddColumnButton boardId={bundle.board.id} scope="item" />}
               </div>
@@ -329,8 +379,8 @@ function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, m
                 <Fragment key={it.id}>
                   <ItemRow item={it} cols={cols} members={members} me={me} canEdit={canEdit} doneIds={doneIds} groups={groups}
                     subCount={subs.length} subOpen={open.has(it.id)} onToggleSub={() => toggleSub(it.id)}
-                    updates={bundle.updateCounts[it.id] ?? 0} onOpen={onOpen} draggable={dragEnabled}
-                    dropping={dropOn === it.id} onDragOverRow={(e) => dragOver(e, it.id)} onDropRow={(e) => dropRow(e, it.id)} onDragLeaveRow={() => setDropOn(null)} />
+                    updates={bundle.updateCounts[it.id] ?? 0} onOpen={onOpen}
+                    onDragStart={dragEnabled ? (e) => dragItem(e, it.id, d, onError, 'row') : undefined} />
                   {open.has(it.id) && (
                     <div role="row" className="contents">
                       <div className="sticky start-0 z-[1] bg-[color:var(--g)] opacity-40" />
@@ -348,8 +398,7 @@ function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, m
             {shown.length === 0 && (
               <div role="row" className="contents">
                 <div className="sticky start-0 z-[1] bg-[color:var(--g)]" />
-                <div className={clsx('col-[2/-1] flex min-h-row items-center border-b border-border px-3 text-sm text-text-muted', dropOn === 'end' && 'bg-surface-selected')}
-                  onDragOver={(e) => dragOver(e, 'end')} onDragLeave={() => setDropOn(null)} onDrop={(e) => dropRow(e, null)}>
+                <div className="col-[2/-1] flex min-h-row items-center border-b border-border px-3 text-sm text-text-muted" data-drop-end={canEdit ? undefined : group.id}>
                   {filtering ? t('emptyFilter') : t('emptyGroup')}
                 </div>
               </div>
@@ -358,8 +407,7 @@ function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, m
             {canEdit && (
               <div role="row" className="contents">
                 <div className="sticky start-0 z-[1] bg-[color:var(--g)] opacity-50" />
-                <div className={clsx('col-[2/-1] flex min-h-row items-center border-b border-border px-3', dropOn === 'end' && 'bg-surface-selected')}
-                  onDragOver={(e) => dragOver(e, 'end')} onDragLeave={() => setDropOn(null)} onDrop={(e) => dropRow(e, null)}>
+                <div className="col-[2/-1] flex min-h-row items-center border-b border-border px-3" data-drop-end={group.id}>
                   <AddItemInput boardId={bundle.board.id} groupId={group.id} placeholder={`${t('addItem')} ${bundle.board.itemNoun}`} inputRef={addRef} />
                 </div>
               </div>
@@ -369,7 +417,7 @@ function GroupSection({ group, groups, bundle, items, cols, filtering, sorted, m
               <div />
               <div className="sticky start-[4px] z-[1] min-h-row border-s border-border bg-bg" />
               {cols.map((c) => (
-                <div key={c.id} className="flex min-h-row items-center justify-center border-s border-border px-2">
+                <div key={c.id} data-col={c.id} className="flex min-h-row items-center justify-center border-s border-border px-2">
                   {c.type === 'numbers' && <SumCell col={c} items={shown} locale={locale} />}
                   {c.type === 'status' && <StatusDist col={c} items={shown} />}
                 </div>
@@ -411,11 +459,10 @@ function StatusDist({ col, items }: { col: Column; items: Item[] }) {
   );
 }
 
-function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen, onToggleSub, updates, onOpen, groups, draggable, dropping, onDragOverRow, onDropRow, onDragLeaveRow }: {
+function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen, onToggleSub, updates, onOpen, groups, onDragStart }: {
   item: Item; cols: Column[]; members: Profile[]; me: Profile | null; canEdit: boolean; doneIds: Set<string>;
   subCount: number; subOpen: boolean; onToggleSub: () => void; updates: number; onOpen: (id: string) => void;
-  groups: Group[]; draggable: boolean; dropping: boolean;
-  onDragOverRow: (e: React.DragEvent) => void; onDropRow: (e: React.DragEvent) => void; onDragLeaveRow: () => void;
+  groups: Group[]; onDragStart?: (e: React.PointerEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useLang();
   const d = useData();
@@ -429,13 +476,12 @@ function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen,
   };
 
   return (
-    <div role="row" className="group/row contents">
+    <div role="row" className="group/row contents" data-row-id={item.id} onPointerDown={onDragStart}>
       <div className="sticky start-0 z-[1] bg-[color:var(--g)]" />
-      <div role="gridcell" onDragOver={onDragOverRow} onDrop={onDropRow} onDragLeave={onDragLeaveRow}
-        className={clsx('sticky start-[4px] z-[1] flex min-h-row min-w-0 items-center gap-1 border-b border-s border-border bg-bg pe-1 ps-1 text-sm group-hover/row:bg-surface-hover',
-          dropping && 'shadow-[inset_0_2px_0_var(--c-accent)]')}>
-        {draggable && (
-          <span draggable aria-hidden title={t('dragToMove')} onDragStart={(e) => { e.dataTransfer.setData(ROW_MIME, item.id); e.dataTransfer.effectAllowed = 'move'; }}
+      <div role="gridcell" data-drag-row={item.id} data-group={item.groupId}
+        className="sticky start-[4px] z-[1] flex min-h-row min-w-0 items-center gap-1 border-b border-s border-border bg-bg pe-1 ps-1 text-sm group-hover/row:bg-surface-hover">
+        {onDragStart && (
+          <span aria-hidden title={t('dragToMove')}
             className="hidden h-7 w-4 flex-none cursor-grab place-items-center text-text-subtle opacity-0 group-hover/row:opacity-100 sm:grid">
             <GripVertical size={14} />
           </span>
@@ -460,7 +506,7 @@ function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen,
         {canEdit && (
           <Dropdown.Root>
             <Dropdown.Trigger asChild>
-              <IconButton label={`${t('itemMenu')}: ${item.name}`} small className="opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100 data-[state=open]:opacity-100"><Ellipsis size={15} /></IconButton>
+              <IconButton label={`${t('itemMenu')}: ${item.name}`} small data-no-drag className="opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100 data-[state=open]:opacity-100"><Ellipsis size={15} /></IconButton>
             </Dropdown.Trigger>
             <Menu>
               <MenuItem onSelect={() => onOpen(item.id)} icon={<Maximize2 size={15} />}>{t('openItem')}</MenuItem>
@@ -485,7 +531,7 @@ function ItemRow({ item, cols, members, me, canEdit, doneIds, subCount, subOpen,
         )}
       </div>
       {cols.map((c) => (
-        <div key={c.id} role="gridcell" className={clsx('flex min-h-row min-w-0 items-stretch border-b border-s border-border', c.type !== 'status' && 'group-hover/row:bg-surface-hover')}>
+        <div key={c.id} role="gridcell" data-col={c.id} className={clsx('flex min-h-row min-w-0 items-stretch border-b border-s border-border', c.type !== 'status' && 'group-hover/row:bg-surface-hover')}>
           <AnyCell item={item} column={c} members={members} me={me} canEdit={canEdit} doneIds={doneIds}
             onSet={(v) => setCell(item, c, v)} onInvalid={() => toast({ tone: 'error', text: t('invalidValue') })} />
         </div>
@@ -591,7 +637,7 @@ function AddColumnButton({ boardId, scope }: { boardId: string; scope: 'item' | 
   );
 }
 
-function ColumnHeader({ column, canEdit, compact }: { column: Column; canEdit: boolean; compact?: boolean }) {
+function ColumnHeader({ column, canEdit, compact, onDragStart }: { column: Column; canEdit: boolean; compact?: boolean; onDragStart?: (e: React.PointerEvent<HTMLDivElement>) => void }) {
   const { t } = useLang();
   const d = useData();
   const toast = useToast();
@@ -608,12 +654,12 @@ function ColumnHeader({ column, canEdit, compact }: { column: Column; canEdit: b
     );
   }
   return (
-    <div role="columnheader" className={cls}>
+    <div role="columnheader" className={clsx(cls, onDragStart && 'cursor-grab active:cursor-grabbing')} data-drag-col={onDragStart ? column.id : undefined} data-col={column.id} onPointerDown={onDragStart}>
       <span className="truncate" title={column.title}>{column.title}</span>
       {canEdit && (
         <Dropdown.Root onOpenChange={(o) => { if (!o) setConfirming(false); }}>
           <Dropdown.Trigger asChild>
-            <IconButton small label={`${t('columnMenu')}: ${column.title}`} className="h-6 w-6 flex-none opacity-0 focus-visible:opacity-100 group-hover/col:opacity-100 data-[state=open]:opacity-100"><Ellipsis size={14} /></IconButton>
+            <IconButton small data-no-drag label={`${t('columnMenu')}: ${column.title}`} className="h-6 w-6 flex-none opacity-0 focus-visible:opacity-100 group-hover/col:opacity-100 data-[state=open]:opacity-100"><Ellipsis size={14} /></IconButton>
           </Dropdown.Trigger>
           <Menu>
             <MenuItem onSelect={() => setRenaming(true)} icon={<Pencil size={15} />}>{t('renameColumn')}</MenuItem>
@@ -672,8 +718,8 @@ function MenuItem({ children, onSelect, icon, danger }: { children: React.ReactN
 // On a phone the wide table becomes a list of cards: the name, its status, who and
 // when. Everything else is one tap away in the item card.
 
-function PhoneGroup({ group, bundle, items, members, canEdit, filtering, onOpen, onAdd }: {
-  group: Group; bundle: BoardBundle; items: Item[]; members: Profile[]; canEdit: boolean; filtering: boolean; onOpen: (id: string) => void; onAdd: () => void;
+function PhoneGroup({ group, bundle, items, members, canEdit, filtering, sorted, onOpen, onAdd }: {
+  group: Group; bundle: BoardBundle; items: Item[]; members: Profile[]; canEdit: boolean; filtering: boolean; sorted: boolean; onOpen: (id: string) => void; onAdd: () => void;
 }) {
   const { t } = useLang();
   const [collapsed, setCollapsed] = useState(false);
@@ -688,10 +734,10 @@ function PhoneGroup({ group, bundle, items, members, canEdit, filtering, onOpen,
       </button>
       {!collapsed && (
         <ul className="grid gap-2">
-          {items.map((it) => <PhoneCard key={it.id} item={it} bundle={bundle} members={members} canEdit={canEdit} doneIds={doneIds} onOpen={onOpen} />)}
-          {items.length === 0 && <li className="rounded-md border border-dashed border-border-strong p-4 text-center text-sm text-text-muted">{filtering ? t('emptyFilter') : t('emptyGroup')}</li>}
+          {items.map((it) => <PhoneCard key={it.id} item={it} bundle={bundle} members={members} canEdit={canEdit} doneIds={doneIds} onOpen={onOpen} sorted={sorted} />)}
+          {items.length === 0 && <li data-drop-end={canEdit ? undefined : group.id} className="rounded-md border border-dashed border-border-strong p-4 text-center text-sm text-text-muted">{filtering ? t('emptyFilter') : t('emptyGroup')}</li>}
           {canEdit && (
-            <li>
+            <li data-drop-end={group.id}>
               <button type="button" onClick={onAdd} className="flex h-11 w-full items-center gap-2 rounded-md px-3 text-sm font-medium text-text-muted hover:bg-surface-hover">
                 <Plus size={16} />{t('addHere')}
               </button>
@@ -703,9 +749,11 @@ function PhoneGroup({ group, bundle, items, members, canEdit, filtering, onOpen,
   );
 }
 
-function PhoneCard({ item, bundle, members, canEdit, doneIds, onOpen }: {
-  item: Item; bundle: BoardBundle; members: Profile[]; canEdit: boolean; doneIds: Set<string>; onOpen: (id: string) => void;
+function PhoneCard({ item, bundle, members, canEdit, doneIds, onOpen, sorted }: {
+  item: Item; bundle: BoardBundle; members: Profile[]; canEdit: boolean; doneIds: Set<string>; onOpen: (id: string) => void; sorted: boolean;
 }) {
+  const d = useData();
+  const toast = useToast();
   const { t, locale } = useLang();
   const setCell = useCellSetter();
   const [picking, setPicking] = useState(false);
@@ -717,7 +765,8 @@ function PhoneCard({ item, bundle, members, canEdit, doneIds, onOpen }: {
   const label = status && (status.settings.labels ?? []).find((l) => l.id === (item.vals[status.id] as StatusValue | undefined)?.label_id);
   const who = ((people && (item.vals[people.id] as PeopleValue | undefined)?.user_ids) || []).map((id) => members.find((m) => m.id === id)).filter(Boolean) as Profile[];
   const dv = date && (item.vals[date.id] as { date?: string } | undefined)?.date;
-  const late = !!dv && dv < todayISO() && !(label && doneIds.has(label.id));
+  const due = dv ? dueState(dv, item.createdAt, !!label && doneIds.has(label.id)) : null;
+  const { lang } = useLang();
   const nv = num && (item.vals[num.id] as NumbersValue | undefined)?.number;
   const subItems = bundle.items.filter((i) => i.parentItemId === item.id);
   const subs = subItems.length;
@@ -725,12 +774,18 @@ function PhoneCard({ item, bundle, members, canEdit, doneIds, onOpen }: {
   const subsDone = subStatus ? subItems.filter((i) => doneIds.has((i.vals[subStatus.id] as StatusValue | undefined)?.label_id ?? '')).length : 0;
   const updates = bundle.updateCounts[item.id] ?? 0;
   return (
-    <li className="flex overflow-hidden rounded-md border border-border bg-bg">
+    <li className="no-callout flex overflow-hidden rounded-md border border-border bg-bg" data-row-id={item.id} data-drag-card={item.id} data-group={item.groupId}
+      onPointerDown={canEdit && !sorted ? (e) => dragItem(e, item.id, d, (er) => toast({ tone: 'error', text: (er as Error).message }), 'card') : undefined}>
       <span className="w-1 flex-none bg-[color:var(--g)]" aria-hidden />
       <button type="button" onClick={() => onOpen(item.id)} className="grid min-w-0 flex-1 content-start gap-2 p-3 text-start active:bg-surface-hover">
         <span className="line-clamp-2 font-medium" dir="auto">{item.name}</span>
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
-          {dv && <span className={clsx('inline-flex items-center gap-1 tabular-nums', late && 'font-semibold text-danger')}><Calendar size={13} />{fmtDate(dv, locale)}{late && ` · ${t('overdue')}`}</span>}
+          {dv && due && (
+            <span className={clsx('inline-flex items-center gap-1 tabular-nums', due.state === 'late' && 'font-semibold text-danger', due.state === 'done' && 'line-through')}>
+              {due.state === 'later' ? <Calendar size={13} /> : <DueMark due={due} size={14} />}{fmtDate(dv, locale)}
+              {(due.state === 'late' || due.state === 'soon') && <span className={clsx(due.state === 'soon' && 'font-medium text-text')}>· {dueText(due, lang)}</span>}
+            </span>
+          )}
           {nv && <span className="tabular-nums"><bdi>{fmtNumber(nv, locale)}</bdi> {num?.settings.unit}</span>}
           {subs > 0 && <span className={clsx('inline-flex items-center gap-1 tabular-nums', subsDone === subs && 'text-success')}><ListChecks size={13} /><bdi>{subsDone}/{subs}</bdi></span>}
           {updates > 0 && <span className="inline-flex items-center gap-1 text-accent"><MessageSquare size={13} />{updates}</span>}

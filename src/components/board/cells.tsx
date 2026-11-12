@@ -1,7 +1,7 @@
 'use client';
 import * as Popover from '@radix-ui/react-popover';
 import clsx from 'clsx';
-import { Check, ExternalLink, FileText, Paperclip, Pencil, Plus, UserRound, X } from 'lucide-react';
+import { Check, CircleAlert, ExternalLink, FileText, Paperclip, Pencil, Plus, UserRound, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { CellValue, CheckboxValue, Column, LabelColor, StatusLabel, DateValue, DropdownValue, EmailValue, FilesValue, Item, LinkValue, NumbersValue, PeopleValue, PhoneValue, Profile, StatusValue, TextValue, TimelineValue } from '@/lib/data/types';
 import { useAssets, useData } from '@/lib/data/context';
@@ -184,16 +184,65 @@ export function PeopleCell({ item, column, members, me, canEdit, onSet }: CellPr
 
 // ---------- date
 
+// ---------- due dates: late, close, or done at a glance
+
+const DAY = 86400000;
+const dayNum = (iso: string) => Math.round(Date.parse(iso + 'T12:00:00Z') / DAY);
+export type Due = { state: 'done' | 'late' | 'soon' | 'later'; days: number; elapsed: number };
+
+/** How a due date stands today: done, late by n days, or n days left (with how much of the time since the item was made has gone). */
+export function dueState(date: string, createdAt: string, done: boolean): Due {
+  const today = dayNum(todayISO());
+  const days = dayNum(date) - today;
+  if (done) return { state: 'done', days, elapsed: 1 };
+  if (days < 0) return { state: 'late', days: -days, elapsed: 1 };
+  const start = Math.min(dayNum(createdAt.slice(0, 10)), today);
+  const total = Math.max(1, dayNum(date) + 1 - start);
+  const elapsed = Math.min(1, Math.max(0.08, (today + 0.5 - start) / total));
+  return { state: days <= 3 ? 'soon' : 'later', days, elapsed };
+}
+
+export function dueText(due: Due, lang: string) {
+  const ar = lang === 'ar';
+  const n = (k: number) => (ar ? (k === 1 ? 'يوم' : k === 2 ? 'يومين' : k <= 10 ? `${k} أيام` : `${k} يوم`) : `${k} day${k === 1 ? '' : 's'}`);
+  if (due.state === 'done') return ar ? 'خلص' : 'Done';
+  if (due.state === 'late') return ar ? `متأخر ${n(due.days)}` : `${n(due.days)} late`;
+  if (due.days === 0) return ar ? 'آخر يوم النهارده' : 'Due today';
+  return ar ? `باقي ${n(due.days)}` : `${n(due.days)} left`;
+}
+
+/** The small sign next to a date: a check when done, an alert when late, a closing ring when 3 days or less are left. */
+export function DueMark({ due, size = 15 }: { due: Due; size?: number }) {
+  const { lang } = useLang();
+  const label = dueText(due, lang);
+  if (due.state === 'done') return <Check size={size} strokeWidth={2.5} className="flex-none text-success" aria-label={label}><title>{label}</title></Check>;
+  if (due.state === 'late') return <CircleAlert size={size} strokeWidth={2.25} className="flex-none text-danger" aria-label={label}><title>{label}</title></CircleAlert>;
+  if (due.state !== 'soon') return null;
+  // a ring that fills as the time runs out
+  const r = 6, c = 2 * Math.PI * r;
+  const color = due.days === 0 ? 'var(--c-danger)' : due.days === 1 ? 'var(--c-warning)' : 'var(--c-accent)';
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" className="flex-none -rotate-90" role="img" aria-label={label}>
+      <title>{label}</title>
+      <circle cx="8" cy="8" r={r} fill="none" stroke="var(--c-border-strong)" strokeWidth="2.5" />
+      <circle cx="8" cy="8" r={r} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${c * due.elapsed} ${c}`} />
+    </svg>
+  );
+}
+
 export function DateCell({ item, column, canEdit, onSet, doneLabelIds }: CellProps & { doneLabelIds?: Set<string>; statusValue?: string }) {
-  const { t, locale } = useLang();
+  const { t, locale, lang } = useLang();
   const [open, setOpen] = useState(false);
   const v = item.vals[column.id] as DateValue | undefined;
   const statusDone = Object.values(item.vals).some((x) => doneLabelIds?.has((x as StatusValue).label_id));
-  const overdue = !!v && v.date < todayISO() && !statusDone;
+  const due = v ? dueState(v.date, item.createdAt, statusDone) : null;
   const face = (
     <button type="button" disabled={!canEdit}
-      aria-label={`${column.title}: ${v ? fmtDate(v.date, locale) : '—'}${overdue ? ` (${t('overdue')})` : ''}`}
-      className={clsx('group flex h-full min-h-[35px] w-full items-center justify-center text-sm tabular-nums disabled:cursor-default', overdue && 'font-semibold text-danger')}>
+      aria-label={`${column.title}: ${v ? fmtDate(v.date, locale) : '—'}${due && due.state !== 'later' ? ` (${dueText(due, lang)})` : ''}`}
+      title={due && due.state !== 'later' ? dueText(due, lang) : undefined}
+      className={clsx('group flex h-full min-h-[35px] w-full items-center justify-center gap-[6px] text-sm tabular-nums disabled:cursor-default',
+        due?.state === 'late' && 'font-semibold text-danger', due?.state === 'done' && 'text-text-subtle line-through')}>
+      {due && <DueMark due={due} />}
       {v ? fmtDate(v.date, locale) : <Plus size={14} className="text-text-subtle opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />}
     </button>
   );
@@ -202,6 +251,7 @@ export function DateCell({ item, column, canEdit, onSet, doneLabelIds }: CellPro
   return (
     <Pop label={column.title} trigger={face} open={open} onOpenChange={setOpen} width={240}>
       <div className="grid gap-2">
+        {due && due.state !== 'later' && <p className={clsx('text-xs font-medium', due.state === 'late' ? 'text-danger' : 'text-text-muted')}>{dueText(due, lang)}</p>}
         <input type="date" aria-label={column.title} defaultValue={v?.date ?? ''} className="h-8 w-full rounded-sm border border-border-input bg-bg px-2"
           onChange={(e) => e.target.value && pick(e.target.value)} />
         <div className="flex flex-wrap gap-1">
