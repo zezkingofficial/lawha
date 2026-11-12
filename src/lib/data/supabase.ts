@@ -89,6 +89,12 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
   const inserting = new Map<string, Promise<unknown>>(); // new items whose insert has not landed yet
   const trash = new Map<string, Item>(); // items deleted here, kept for undo
   const errorSubs = new Set<(e: Error) => void>();
+  const savingSubs = new Set<(busy: boolean) => void>();
+  let inflight = 0;
+  const track = async <T,>(p: Promise<T>): Promise<T> => {
+    if (inflight++ === 0) savingSubs.forEach((f) => f(true));
+    try { return await p; } finally { if (--inflight === 0) savingSubs.forEach((f) => f(false)); }
+  };
   const landed = async (itemId: string) => { await inserting.get(itemId); }; // rejects if the insert failed
 
   const emit = (boardId: string) => boardSubs.get(boardId)?.forEach((f) => f());
@@ -125,8 +131,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     pendingItems.set(prev.id, { item: next, n: (p?.n ?? 0) + 1 });
     putItem(next);
     try {
-      await inserting.get(prev.id);
-      const row = await send();
+      const row = await track((async () => { await inserting.get(prev.id); return send(); })());
       const left = pendingItems.get(prev.id);
       if (left && left.n > 1) pendingItems.set(prev.id, { ...left, n: left.n - 1 });
       else { pendingItems.delete(prev.id); if (row) putItem(item(row)); }
@@ -382,7 +387,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
         emit(owner.board.id);
       }
       try {
-        const { error, count } = await sb.from('views').update(upd, { count: 'exact' }).eq('id', viewId);
+        const { error, count } = await track(Promise.resolve(sb.from('views').update(upd, { count: 'exact' }).eq('id', viewId)));
         fail(error);
         if (count === 0) throw new NotAllowed('cannot change this view');
       } catch (e) { if (owner) refresh(owner.board.id); throw e; }
@@ -435,7 +440,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       // show it and hand it back now; writes to it wait for the insert, and a refused insert removes it again
       pendingItems.set(draft.id, { item: draft, n: 1 });
       putItem(draft);
-      const insert = (async () => {
+      const insert = track((async () => {
         try {
           const { data, error } = await sb.from('items').insert(row).select('*').single();
           fail(error);
@@ -448,7 +453,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
           errorSubs.forEach((f) => f(e as Error));
           throw e;
         } finally { inserting.delete(draft.id); }
-      })();
+      })());
       insert.catch(() => {}); // reported through onWriteError and to any write that waits on it
       inserting.set(draft.id, insert);
       return draft;
@@ -657,6 +662,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
         stale.add(boardId); // nobody is listening any more; refresh next time it opens
       };
     },
+    onSaving(cb) { savingSubs.add(cb); return () => { savingSubs.delete(cb); }; },
     onWriteError(cb) { errorSubs.add(cb); return () => { errorSubs.delete(cb); }; },
     subscribeAll(onChange) {
       allSubs.add(onChange);

@@ -309,4 +309,6 @@ export interface DataLayer {
   subscribeAll(onChange: () => void): () => void;
   /** Writes that were shown at once but then refused by the server (optional: only layers that save in the background). */
   onWriteError?(cb: (e: Error) => void): () => void;
+  /** True while changes shown on screen are still on their way to the server. */
+  onSaving?(cb: (busy: boolean) => void): () => void;
 }

@@ -46,12 +46,21 @@ function Shell({ me, children }: { me: Profile; children: ReactNode }) {
   const dl = useData();
   const toastW = useToast();
   useEffect(() => dl.onWriteError?.((e) => toastW({ tone: 'error', text: e.message })), [dl, toastW]);
+  // changes show at once and save a moment later: say so, and warn before leaving mid-save
+  const [saving, setSaving] = useState(false);
+  useEffect(() => dl.onSaving?.(setSaving), [dl]);
+  useEffect(() => {
+    if (!saving) return;
+    const stop = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    addEventListener('beforeunload', stop);
+    return () => removeEventListener('beforeunload', stop);
+  }, [saving]);
   useEffect(() => { document.body.classList.add('has-tabbar'); return () => document.body.classList.remove('has-tabbar'); }, []);
   return (
     <QuickAddProvider>
     <div className="flex min-h-full flex-col">
       {!d.auth && <p className="border-b border-border bg-surface py-1 text-xs text-text-muted" style={{ paddingInline: 'max(16px, env(safe-area-inset-left, 0px))' }}>{t('demoNote')}</p>}
-      <TopBar me={me} onMenu={() => setDrawer(true)} />
+      <TopBar me={me} saving={saving} onMenu={() => setDrawer(true)} />
       <div className="grid flex-1 grid-cols-[minmax(0,1fr)] lg:grid-cols-[256px_minmax(0,1fr)]">
         <aside className="hidden border-e border-border bg-sidebar lg:block">
           <Sidebar />
@@ -108,7 +117,7 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
   );
 }
 
-function TopBar({ me, onMenu }: { me: Profile; onMenu: () => void }) {
+function TopBar({ me, saving, onMenu }: { me: Profile; saving: boolean; onMenu: () => void }) {
   const { t, lang, setLang } = useLang();
   const d = useData();
   const { go } = useRouter();
@@ -129,6 +138,9 @@ function TopBar({ me, onMenu }: { me: Profile; onMenu: () => void }) {
         <Search size={16} /><span className="text-sm">{t('search')}</span><span className="ms-auto rounded-xs border border-border-strong px-1 font-mono text-xs">{t('soon')}</span>
       </div>
       <div className="ms-auto flex items-center gap-[2px] md:ms-0">
+        <span aria-live="polite" className={clsx('me-2 inline-flex items-center gap-1 text-xs text-text-muted transition-opacity duration-base', saving ? 'opacity-100' : 'opacity-0')}>
+          <span className="h-2 w-2 animate-pulse rounded-pill bg-warning motion-reduce:animate-none" aria-hidden />{saving ? t('saving') : ''}
+        </span>
         <span className="hidden sm:contents"><BellButton /></span>
         <Dropdown.Root>
           <Dropdown.Trigger asChild>
