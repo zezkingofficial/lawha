@@ -23,6 +23,37 @@ Data: Supabase (`src/lib/data/supabase.ts`) when the env vars are set; the in-br
 | S12 kanban | 2026-11-08 | done | — | HTML drag does not work on touch screens, so each card also has a "move to" select (works on phones and with a keyboard). |
 | live sync | 2026-11-08 | partial | across devices needs Supabase Realtime | BroadcastChannel alone dropped some updates between tabs in testing; added the `storage` event as a second signal. 8/8 runs pass after. |
 
+## Order page on one screen + add button (2026-11-12)
+
+The owner reported that the add-order button did nothing. He also asked that opening an order show a short version of the details, then a checklist of internal tasks he can tick off (struck through when done), then the updates, all on one page with no tabs.
+
+Changes in commit `902c4ae`:
+- **Add button**
+  - On every screen size, the board's «إضافة طلب» now opens the quick add sheet. On desktop it used to only move the cursor to the add row at the bottom of the first group, so tapping it looked like nothing happened.
+  - Pressing add with no name now shows what is missing.
+  - Ids made on the device are now real UUIDs even on browsers that lack `crypto.randomUUID`.
+- **Order page**
+  - One scrolling page:
+    1. filled fields as small tiles, two or three per row (empty fields fold behind «حقول فاضية (n)»)
+    2. المهام
+    3. التحديثات
+    4. الملفات and النشاط, folded at the bottom
+- **Tasks** are the order's subitems.
+  - Ticking a task sets the subitem status to its "done" label, and the task is struck through. Tap a task to rename it; delete has an undo.
+  - The progress bar on the page and the board card show the count (1/3).
+  - A new task appears at once. The first task on a board creates the task columns, and only once, even if you add tasks quickly.
+- **Bugs found while testing on the real database:**
+  - The item card moved focus to its close button on every data change, which broke typing in the task box.
+  - Opening an item is a route change, so the screens remount. The remounted screen thought nothing was saving, which let a reload drop a write that was still in flight. A new listener is now told the current saving state.
+  - A board reload that was already running could drop task columns created meanwhile; the board now reloads after the columns land.
+  - Posting an update now counts as saving.
+
+Checks:
+- 29/29 unit tests, 9/9 real-database tests
+- demo suites phone5 (new), phone4, e2e, e2e2, e2e3
+- on the real database, at 390 px and 1280 px: add an order, add two tasks, tick one, post an update, reload; everything is kept. The desktop test ran 5 times in a row after the fix.
+- live flow test
+
 ## Speed (2026-11-12)
 
 The owner said every change took seconds to show. Measured on the real project: an edit waited for the server (~0.7–1 s), then for the Realtime echo (~1 s), then reloaded the whole board (~1 s, two round trips).
