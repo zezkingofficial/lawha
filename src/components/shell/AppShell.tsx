@@ -8,7 +8,7 @@ import type { Board, Profile, StatusValue, Workspace } from '@/lib/data/types';
 import { labelBg, todayISO } from '@/lib/format';
 import { useLang } from '@/lib/i18n';
 import { useRouter } from '@/lib/router';
-import { Avatar, Button, IconButton } from '../ui';
+import { Avatar, Button, IconButton, useToast } from '../ui';
 import { QuickAddProvider, useQuickAdd } from '../QuickAdd';
 import { BoardScreen } from '../board/BoardScreen';
 import { Inbox, MyWork, useUnreadCount } from '../personal';
@@ -43,6 +43,9 @@ function Shell({ me, children }: { me: Profile; children: ReactNode }) {
   const [drawer, setDrawer] = useState(false);
   const { route } = useRouter();
   useEffect(() => setDrawer(false), [route]);
+  const dl = useData();
+  const toastW = useToast();
+  useEffect(() => dl.onWriteError?.((e) => toastW({ tone: 'error', text: e.message })), [dl, toastW]);
   useEffect(() => { document.body.classList.add('has-tabbar'); return () => document.body.classList.remove('has-tabbar'); }, []);
   return (
     <QuickAddProvider>

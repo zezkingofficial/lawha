@@ -130,7 +130,9 @@ function Form({ bundle, members, me, boards, onBoard, askedGroup, onDone }: {
     setBusy(true);
     try {
       const item = await d.createItem(bundle.board.id, name.trim(), { groupId: groupId ?? bundle.groups[0]?.id ?? '' });
-      for (const [c, cv] of writes) await d.setCell(item.id, c.id, cv);
+      // the item is on screen already; the fields save behind it, in order
+      (async () => { for (const [c, cv] of writes) await d.setCell(item.id, c.id, cv); })().catch((e) =>
+        toast({ tone: 'error', text: e instanceof NotAllowed ? t('viewOnlyError') : e instanceof CellError ? t('invalidValue') : (e as Error).message }));
       try { localStorage.setItem(LAST, bundle.board.id); } catch { /* ignore */ }
       toast({ text: `${t('added')}: ${item.name}`, undo: () => d.deleteItem(item.id) });
       if (next) { setName(''); setVals((v) => (status && v[status.id] ? { [status.id]: v[status.id] } : {})); nameRef.current?.focus(); }

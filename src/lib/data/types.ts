@@ -307,4 +307,6 @@ export interface DataLayer {
   // realtime: called whenever this board changes, here or in another tab/device
   subscribe(boardId: string, onChange: () => void): () => void;
   subscribeAll(onChange: () => void): () => void;
+  /** Writes that were shown at once but then refused by the server (optional: only layers that save in the background). */
+  onWriteError?(cb: (e: Error) => void): () => void;
 }

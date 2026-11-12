@@ -2,7 +2,7 @@ import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { generateKeyBetween } from 'fractional-indexing';
 import { DEFAULT_LABELS, emptySettings } from './seed';
 import { NotAllowed } from './fake';
-import { CellError } from './validate';
+import { CellError, validateCell } from './validate';
 import type {
   Account, ActivityEntry, Asset, AuthApi, Board, BoardBundle, BoardMember, CellValue, Column, ColumnType, DataLayer, Group, Invite,
   Item, MyWorkRow, NewFile, Notification, Place, Profile, Role, StatusValue, Update, View, ViewSettings, Workspace,
@@ -73,6 +73,105 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     const canEdit = c.role !== 'viewer' && (mine ?? 'editor') !== 'viewer';
     const canAdmin = c.role === 'admin' || mine === 'owner' || b.created_by === c.userId;
     return { canEdit, canAdmin };
+  };
+
+  // ---- board cache
+  // Screens read boards from here. Item writes change the cache first and the server
+  // after, so an edit shows at once instead of after a round trip plus a full reload;
+  // changes from other people arrive as single rows over Realtime and are applied in place.
+  const cache = new Map<string, BoardBundle>();
+  const stale = new Set<string>();
+  const loading = new Map<string, Promise<BoardBundle | null>>();
+  const again = new Set<string>();
+  const boardSubs = new Map<string, Set<() => void>>();
+  const channels = new Map<string, RealtimeChannel>();
+  const pendingItems = new Map<string, { item: Item; n: number }>(); // items with writes in flight: these win over server copies
+  const inserting = new Map<string, Promise<unknown>>(); // new items whose insert has not landed yet
+  const trash = new Map<string, Item>(); // items deleted here, kept for undo
+  const errorSubs = new Set<(e: Error) => void>();
+  const landed = async (itemId: string) => { await inserting.get(itemId); }; // rejects if the insert failed
+
+  const emit = (boardId: string) => boardSubs.get(boardId)?.forEach((f) => f());
+  const setItems = (boardId: string, fn: (items: Item[]) => Item[]) => {
+    const b = cache.get(boardId);
+    if (!b) return;
+    cache.set(boardId, { ...b, items: fn(b.items).filter((i) => !i.deletedAt).sort(byPos) });
+    emit(boardId);
+  };
+  const putItem = (it: Item) => setItems(it.boardId, (items) => [...items.filter((x) => x.id !== it.id), it]);
+  const findItem = (id: string): Item | null => {
+    const p = pendingItems.get(id);
+    if (p) return p.item;
+    for (const b of cache.values()) { const it = b.items.find((i) => i.id === id); if (it) return it; }
+    return trash.get(id) ?? null;
+  };
+  const load = (boardId: string): Promise<BoardBundle | null> => {
+    const running = loading.get(boardId);
+    if (running) { again.add(boardId); return running; }
+    stale.delete(boardId);
+    const p = fetchBoard(boardId).finally(() => {
+      loading.delete(boardId);
+      if (again.delete(boardId)) load(boardId).then(() => emit(boardId), () => {});
+    });
+    loading.set(boardId, p);
+    return p;
+  };
+  const refresh = (boardId: string) => { if (boardSubs.get(boardId)?.size) load(boardId).then(() => emit(boardId), () => {}); else stale.add(boardId); };
+  const refreshOpen = () => { for (const id of cache.keys()) refresh(id); };
+
+  // Change one item now, then on the server; undo the local change if the server says no.
+  const writeItem = async (prev: Item, next: Item, send: () => Promise<Row | null | void>) => {
+    const p = pendingItems.get(prev.id);
+    pendingItems.set(prev.id, { item: next, n: (p?.n ?? 0) + 1 });
+    putItem(next);
+    try {
+      await inserting.get(prev.id);
+      const row = await send();
+      const left = pendingItems.get(prev.id);
+      if (left && left.n > 1) pendingItems.set(prev.id, { ...left, n: left.n - 1 });
+      else { pendingItems.delete(prev.id); if (row) putItem(item(row)); }
+    } catch (e) {
+      pendingItems.delete(prev.id);
+      putItem(prev);
+      refresh(prev.boardId);
+      throw e;
+    }
+  };
+
+  const fetchBoard = async (boardId: string): Promise<BoardBundle | null> => {
+    const c = await need();
+    const [bq, g, cols, its, vs, ms, ups] = await Promise.all([
+      sb.from('boards').select('*').eq('id', boardId).is('deleted_at', null).maybeSingle(),
+      sb.from('groups').select('*').eq('board_id', boardId).is('deleted_at', null).order('position'),
+      sb.from('columns').select('*').eq('board_id', boardId).order('position'),
+      sb.from('items').select('*').eq('board_id', boardId).is('deleted_at', null).order('position').limit(10000),
+      sb.from('views').select('*').eq('board_id', boardId).order('position'),
+      sb.from('board_members').select('*').eq('board_id', boardId),
+      sb.from('updates').select('item_id').eq('board_id', boardId),
+    ]);
+    const b = bq.data;
+    if (!b) { cache.delete(boardId); return null; }
+    for (const r of [g, cols, its, vs, ms, ups]) fail(r.error);
+    const members: BoardMember[] = (ms.data ?? []).map((m) => ({ boardId: m.board_id, userId: m.user_id, role: m.role }));
+    const updateCounts: Record<string, number> = {};
+    for (const u of ups.data ?? []) updateCounts[u.item_id] = (updateCounts[u.item_id] ?? 0) + 1;
+    // writes still in flight win over what the server had a moment ago
+    const fetched = (its.data ?? []).map(item);
+    const ids = new Set(fetched.map((i) => i.id));
+    const items = [...fetched.map((i) => pendingItems.get(i.id)?.item ?? i), ...[...pendingItems.values()].map((p) => p.item).filter((i) => i.boardId === boardId && !ids.has(i.id))]
+      .filter((i) => !i.deletedAt).sort(byPos);
+    const bundle: BoardBundle = {
+      board: board(b), groups: (g.data ?? []).map(group), columns: (cols.data ?? []).map(column), items,
+      views: (vs.data ?? []).map(view), members, updateCounts, ...access(c, b, members),
+    };
+    cache.set(boardId, bundle);
+    return bundle;
+  };
+  const positionIn = (bundle: BoardBundle, place: Place, ignoreId?: string) => {
+    const sib = bundle.items.filter((i) => i.groupId === place.groupId && i.parentItemId === null && i.id !== ignoreId);
+    if (place.beforeId) { const i = sib.findIndex((s) => s.id === place.beforeId); return generateKeyBetween(sib[i]?.position ?? null, sib[i + 1]?.position ?? null); }
+    if (place.afterId) { const i = sib.findIndex((s) => s.id === place.afterId); return generateKeyBetween(sib[i - 1]?.position ?? null, sib[i]?.position ?? null); }
+    return generateKeyBetween(sib.at(-1)?.position ?? null, null);
   };
   const signedUrls = async (rows: Row[]): Promise<Asset[]> => {
     if (!rows.length) return [];
@@ -171,6 +270,37 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     },
   };
 
+  let meChannel: RealtimeChannel | 'opening' | null = null;
+  const openChannel = (boardId: string) => {
+    // one channel per open board; RLS decides which rows each person receives
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const later = () => { clearTimeout(t); t = setTimeout(() => refresh(boardId), 150); };
+    let ch: RealtimeChannel = sb.channel(`board:${boardId}:${uid()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'items', filter: `board_id=eq.${boardId}` }, (msg) => {
+        const r = (msg.eventType === 'DELETE' ? msg.old : msg.new) as Row;
+        if (!r?.id || pendingItems.has(r.id)) return; // our own write in flight; its reply lands on its own
+        if (!cache.has(boardId) || msg.eventType === 'DELETE' || !('vals' in r)) return later();
+        const it = item(r);
+        if (it.deletedAt) { const old = findItem(it.id); if (old) trash.set(it.id, old); }
+        putItem(it);
+      });
+    for (const table of ['groups', 'columns', 'views', 'updates', 'board_members']) {
+      ch = ch.on('postgres_changes', { event: '*', schema: 'public', table, filter: `board_id=eq.${boardId}` }, later);
+    }
+    ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: 'boards', filter: `id=eq.${boardId}` }, later);
+    channels.set(boardId, ch);
+    let joined = false;
+    // make sure the socket carries this person's token so RLS filters what they receive
+    sb.auth.getSession().then(({ data }) => {
+      if (data.session) sb.realtime.setAuth(data.session.access_token);
+      ch.subscribe((status) => {
+        if (status !== 'SUBSCRIBED') return;
+        if (joined) later(); // reconnected: catch up on anything missed
+        joined = true;
+      });
+    });
+  };
+
   const layer: DataLayer = {
     auth,
     async me() { const c = await getCtx(); return c?.accountId ? c.profile : null; },
@@ -198,25 +328,11 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       return (data ?? []).map(board);
     },
     async getBoard(boardId): Promise<BoardBundle | null> {
-      const c = await need();
-      const { data: b } = await sb.from('boards').select('*').eq('id', boardId).is('deleted_at', null).maybeSingle();
-      if (!b) return null;
-      const [g, cols, its, vs, ms, ups] = await Promise.all([
-        sb.from('groups').select('*').eq('board_id', boardId).is('deleted_at', null).order('position'),
-        sb.from('columns').select('*').eq('board_id', boardId).order('position'),
-        sb.from('items').select('*').eq('board_id', boardId).is('deleted_at', null).order('position').limit(10000),
-        sb.from('views').select('*').eq('board_id', boardId).order('position'),
-        sb.from('board_members').select('*').eq('board_id', boardId),
-        sb.from('updates').select('item_id').eq('board_id', boardId),
-      ]);
-      for (const r of [g, cols, its, vs, ms, ups]) fail(r.error);
-      const members: BoardMember[] = (ms.data ?? []).map((m) => ({ boardId: m.board_id, userId: m.user_id, role: m.role }));
-      const updateCounts: Record<string, number> = {};
-      for (const u of ups.data ?? []) updateCounts[u.item_id] = (updateCounts[u.item_id] ?? 0) + 1;
-      return {
-        board: board(b), groups: (g.data ?? []).map(group), columns: (cols.data ?? []).map(column), items: (its.data ?? []).map(item),
-        views: (vs.data ?? []).map(view), members, updateCounts, ...access(c, b, members),
-      };
+      const c = cache.get(boardId);
+      if (!c) return load(boardId);
+      // show what we have and refresh behind it when it may be out of date
+      if (stale.has(boardId) || !boardSubs.get(boardId)?.size) load(boardId).then(() => emit(boardId), () => {});
+      return c;
     },
     async createBoard(workspaceId, name) {
       const { data, error } = await sb.rpc('create_board', { p_workspace: workspaceId, p_name: name });
@@ -253,13 +369,23 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     async updateView(viewId, patch) {
       const upd: Row = {};
       if (patch.name?.trim()) upd.name = patch.name.trim();
+      // filters and sorts apply at once from the cached view; the server copy follows
+      const owner = [...cache.values()].find((b) => b.views.some((v) => v.id === viewId));
+      const cur = owner?.views.find((v) => v.id === viewId);
       if (patch.settings) {
-        const { data } = await sb.from('views').select('settings').eq('id', viewId).single();
-        upd.settings = { ...emptySettings(), ...(data?.settings ?? {}), ...patch.settings } as ViewSettings;
+        let base = cur?.settings;
+        if (!base) { const { data } = await sb.from('views').select('settings').eq('id', viewId).single(); base = data?.settings; }
+        upd.settings = { ...emptySettings(), ...(base ?? {}), ...patch.settings } as ViewSettings;
       }
-      const { error, count } = await sb.from('views').update(upd, { count: 'exact' }).eq('id', viewId);
-      fail(error);
-      if (count === 0) throw new NotAllowed('cannot change this view');
+      if (owner && cur) {
+        cache.set(owner.board.id, { ...owner, views: owner.views.map((v) => (v.id === viewId ? { ...v, ...(upd.name ? { name: upd.name } : {}), ...(upd.settings ? { settings: upd.settings } : {}) } : v)) });
+        emit(owner.board.id);
+      }
+      try {
+        const { error, count } = await sb.from('views').update(upd, { count: 'exact' }).eq('id', viewId);
+        fail(error);
+        if (count === 0) throw new NotAllowed('cannot change this view');
+      } catch (e) { if (owner) refresh(owner.board.id); throw e; }
     },
     async deleteView(viewId) { const { error } = await sb.from('views').delete().eq('id', viewId); fail(error); },
 
@@ -294,27 +420,94 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       const c = await need();
       const clean = name.trim();
       if (!clean) throw new Error('name required');
-      const { data, error } = await sb.from('items').insert({
-        account_id: c.accountId, board_id: boardId, group_id: place.groupId, name: clean.slice(0, 500), created_by: c.userId,
-        position: await siblingsKey(boardId, place),
-      }).select('*').single();
-      fail(error);
-      return item(data!);
+      const bundle = cache.get(boardId);
+      const now = new Date().toISOString();
+      const row: Row = {
+        id: uid(), account_id: c.accountId, board_id: boardId, group_id: place.groupId, parent_item_id: null, name: clean.slice(0, 500), created_by: c.userId,
+        position: bundle ? positionIn(bundle, place) : await siblingsKey(boardId, place),
+      };
+      const draft = item({ ...row, vals: {}, deleted_at: null, created_at: now, updated_at: now });
+      if (!bundle) {
+        const { data, error } = await sb.from('items').insert(row).select('*').single();
+        fail(error);
+        return item(data!);
+      }
+      // show it and hand it back now; writes to it wait for the insert, and a refused insert removes it again
+      pendingItems.set(draft.id, { item: draft, n: 1 });
+      putItem(draft);
+      const insert = (async () => {
+        try {
+          const { data, error } = await sb.from('items').insert(row).select('*').single();
+          fail(error);
+          const left = pendingItems.get(draft.id);
+          if (left && left.n > 1) pendingItems.set(draft.id, { ...left, n: left.n - 1 });
+          else { pendingItems.delete(draft.id); putItem(item(data!)); }
+        } catch (e) {
+          pendingItems.delete(draft.id);
+          setItems(boardId, (items) => items.filter((i) => i.id !== draft.id));
+          errorSubs.forEach((f) => f(e as Error));
+          throw e;
+        } finally { inserting.delete(draft.id); }
+      })();
+      insert.catch(() => {}); // reported through onWriteError and to any write that waits on it
+      inserting.set(draft.id, insert);
+      return draft;
     },
-    async renameItem(id, name) { if (!name.trim()) return; const { error } = await sb.from('items').update({ name: name.trim().slice(0, 500) }).eq('id', id); fail(error); },
+    async renameItem(id, name) {
+      if (!name.trim()) return;
+      const send = async () => { const { data, error } = await sb.from('items').update({ name: name.trim().slice(0, 500) }).eq('id', id).select('*').maybeSingle(); fail(error); return data; };
+      const prev = findItem(id);
+      if (!prev) { await send(); refreshOpen(); return; }
+      await writeItem(prev, { ...prev, name: name.trim().slice(0, 500) }, send);
+    },
     async setCell(itemId, columnId, value) {
-      const { data, error } = await sb.rpc('set_cell', { p_item: itemId, p_column: columnId, p_value: value });
-      fail(error);
-      return item(data as Row);
+      const send = async () => { const { data, error } = await sb.rpc('set_cell', { p_item: itemId, p_column: columnId, p_value: value }); fail(error); return data as Row; };
+      const prev = findItem(itemId);
+      const col = prev && cache.get(prev.boardId)?.columns.find((x) => x.id === columnId);
+      if (!prev || !col) { const r = await send(); refreshOpen(); return item(r); }
+      if (!cache.get(prev.boardId)!.canEdit) throw new NotAllowed('view only');
+      validateCell(col, value); // a bad value never shows, not even for a moment
+      const vals = { ...prev.vals };
+      if (value === null) delete vals[columnId]; else vals[columnId] = value;
+      const next = { ...prev, vals, updatedAt: new Date().toISOString() };
+      await writeItem(prev, next, send);
+      return findItem(itemId) ?? next;
     },
     async moveItem(id, place) {
-      const { data: it } = await sb.from('items').select('board_id').eq('id', id).single();
-      const position = await siblingsKey(it!.board_id, place, id);
-      const { error } = await sb.from('items').update({ group_id: place.groupId, position }).eq('id', id);
-      fail(error);
+      const prev = findItem(id);
+      const bundle = prev && cache.get(prev.boardId);
+      if (!prev || !bundle) {
+        const { data: it } = await sb.from('items').select('board_id').eq('id', id).single();
+        const position = await siblingsKey(it!.board_id, place, id);
+        const { error } = await sb.from('items').update({ group_id: place.groupId, position }).eq('id', id);
+        fail(error); refreshOpen(); return;
+      }
+      const position = positionIn(bundle, place, id);
+      await writeItem(prev, { ...prev, groupId: place.groupId, position }, async () => {
+        const { data, error } = await sb.from('items').update({ group_id: place.groupId, position }).eq('id', id).select('*').maybeSingle();
+        fail(error); return data;
+      });
     },
-    async deleteItem(id) { const { error } = await sb.from('items').update({ deleted_at: new Date().toISOString() }).eq('id', id); fail(error); },
-    async restoreItem(id) { const { error } = await sb.from('items').update({ deleted_at: null }).eq('id', id); fail(error); },
+    async deleteItem(id) {
+      const send = async () => { const { error } = await sb.from('items').update({ deleted_at: new Date().toISOString() }).eq('id', id); fail(error); };
+      const prev = findItem(id);
+      if (!prev) { await send(); refreshOpen(); return; }
+      trash.set(id, prev);
+      // subitems go with their parent on screen too
+      const kids = cache.get(prev.boardId)?.items.filter((i) => i.parentItemId === id) ?? [];
+      kids.forEach((k) => trash.set(k.id, k));
+      setItems(prev.boardId, (items) => items.filter((i) => i.parentItemId !== id));
+      await writeItem(prev, { ...prev, deletedAt: new Date().toISOString() }, send);
+    },
+    async restoreItem(id) {
+      const send = async () => { const { data, error } = await sb.from('items').update({ deleted_at: null }).eq('id', id).select('*').maybeSingle(); fail(error); return data; };
+      const prev = trash.get(id);
+      if (!prev) { await send(); refreshOpen(); return; }
+      trash.delete(id);
+      const kids = [...trash.values()].filter((k) => k.parentItemId === id);
+      kids.forEach((k) => { trash.delete(k.id); putItem(k); });
+      await writeItem({ ...prev, deletedAt: new Date().toISOString() }, { ...prev, deletedAt: null }, send);
+    },
 
     async createColumn(boardId, type: ColumnType, title, scope = 'item') {
       const c = await need();
@@ -331,6 +524,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
 
     async createSubitem(parentItemId, name) {
       const c = await need();
+      await landed(parentItemId);
       const { data: parent } = await sb.from('items').select('board_id').eq('id', parentItemId).single();
       const boardId = parent!.board_id;
       const { count } = await sb.from('columns').select('id', { count: 'exact', head: true }).eq('board_id', boardId).eq('scope', 'subitem');
@@ -345,6 +539,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       const pos = await lastPos('items', { parent_item_id: parentItemId });
       const { data, error } = await sb.from('items').insert({ account_id: c.accountId, board_id: boardId, parent_item_id: parentItemId, group_id: null, name: name.trim().slice(0, 500), created_by: c.userId, position: generateKeyBetween(pos, null) }).select('*').single();
       fail(error);
+      if (!count) refresh(boardId); else putItem(item(data!));
       return item(data!);
     },
 
@@ -361,7 +556,9 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     },
     async postUpdate(itemId, bodyText, mentionedUserIds, opts = {}) {
       const c = await need();
-      const { data: it } = await sb.from('items').select('board_id').eq('id', itemId).single();
+      await landed(itemId);
+      const known = findItem(itemId);
+      const it = known ? { board_id: known.boardId } : (await sb.from('items').select('board_id').eq('id', itemId).single()).data;
       const text = bodyText.trim();
       if (!text && !opts.files?.length) throw new Error('empty update');
       const { data, error } = await sb.from('updates').insert({
@@ -371,6 +568,9 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       fail(error);
       const assetIds: string[] = [];
       for (const f of opts.files ?? []) assetIds.push((await upload(c, it!.board_id, f, { itemId, updateId: data!.id })).id);
+      const b = cache.get(it!.board_id);
+      if (b) cache.set(b.board.id, { ...b, updateCounts: { ...b.updateCounts, [itemId]: (b.updateCounts[itemId] ?? 0) + 1 } });
+      emit(it!.board_id);
       return { id: data!.id, boardId: data!.board_id, itemId, parentUpdateId: data!.parent_update_id, authorId: c.userId, bodyText: data!.body_text, mentionedUserIds: data!.mentioned_user_ids, assetIds, createdAt: data!.created_at, editedAt: null };
     },
     async editUpdate(id, bodyText) {
@@ -386,6 +586,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     },
     async uploadToCell(itemId, columnId, file) {
       const c = await need();
+      await landed(itemId);
       const { data: it } = await sb.from('items').select('board_id, vals').eq('id', itemId).single();
       const a = await upload(c, it!.board_id, file, { itemId });
       const ids = ((it!.vals?.[columnId] as { asset_ids?: string[] } | undefined)?.asset_ids) ?? [];
@@ -442,33 +643,47 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     },
 
     subscribe(boardId, onChange) {
-      // one channel per open board; RLS decides which rows each person receives
-      let t: ReturnType<typeof setTimeout> | undefined;
-      const ping = () => { clearTimeout(t); t = setTimeout(onChange, 120); };
-      let ch: RealtimeChannel = sb.channel(`board:${boardId}:${uid()}`);
-      for (const table of ['items', 'groups', 'columns', 'views', 'updates', 'board_members']) {
-        ch = ch.on('postgres_changes', { event: '*', schema: 'public', table, filter: `board_id=eq.${boardId}` }, ping);
-      }
-      ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: 'boards', filter: `id=eq.${boardId}` }, ping);
-      // make sure the socket carries this person's token so RLS filters what they receive
-      sb.auth.getSession().then(({ data }) => {
-        if (data.session) sb.realtime.setAuth(data.session.access_token);
-        ch.subscribe((status) => { if (status === 'SUBSCRIBED') ping(); }); // refetch after (re)connecting
-      });
-      return () => { clearTimeout(t); sb.removeChannel(ch); };
+      let subs = boardSubs.get(boardId);
+      if (!subs) boardSubs.set(boardId, (subs = new Set()));
+      subs.add(onChange);
+      if (!channels.has(boardId)) openChannel(boardId);
+      return () => {
+        subs!.delete(onChange);
+        if (subs!.size) return;
+        boardSubs.delete(boardId);
+        const ch = channels.get(boardId);
+        channels.delete(boardId);
+        if (ch) sb.removeChannel(ch);
+        stale.add(boardId); // nobody is listening any more; refresh next time it opens
+      };
     },
+    onWriteError(cb) { errorSubs.add(cb); return () => { errorSubs.delete(cb); }; },
     subscribeAll(onChange) {
       allSubs.add(onChange);
-      let ch: RealtimeChannel | null = null;
-      getCtx().then((c) => {
-        if (!c || !allSubs.has(onChange)) return;
-        ch = sb.channel(`me:${c.userId}:${uid()}`)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${c.userId}` }, () => onChange())
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'boards' }, () => onChange())
-          .subscribe();
-      });
-      return () => { allSubs.delete(onChange); if (ch) sb.removeChannel(ch); };
+      if (!meChannel) {
+        meChannel = 'opening';
+        getCtx().then((c) => {
+          if (!c || !allSubs.size) { meChannel = null; return; }
+          let t: ReturnType<typeof setTimeout> | undefined;
+          const ping = () => { clearTimeout(t); t = setTimeout(() => allSubs.forEach((f) => f()), 150); };
+          meChannel = sb.channel(`me:${c.userId}:${uid()}`)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${c.userId}` }, ping)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'boards' }, ping)
+            .subscribe();
+        });
+      }
+      return () => {
+        allSubs.delete(onChange);
+        if (!allSubs.size && meChannel && meChannel !== 'opening') { sb.removeChannel(meChannel); meChannel = null; }
+      };
     },
   };
+  // Writes that change a board's shape (groups, columns, views, sharing) reload the open
+  // boards as soon as the server answers, instead of waiting for the Realtime echo.
+  for (const k of ['renameBoard', 'setBoardKind', 'setBoardMember', 'createView', 'deleteView', 'createGroup', 'renameGroup', 'deleteGroup',
+    'restoreGroup', 'moveGroup', 'setGroupColor', 'createColumn', 'renameColumn', 'deleteColumn', 'updateColumnSettings'] as const) {
+    const f = layer[k] as (...a: unknown[]) => Promise<unknown>;
+    (layer as unknown as Record<string, unknown>)[k] = async (...a: unknown[]) => { const r = await f(...a); refreshOpen(); return r; };
+  }
   return layer;
 }
