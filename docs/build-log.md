@@ -23,6 +23,27 @@ Data: Supabase (`src/lib/data/supabase.ts`) when the env vars are set; the in-br
 | S12 kanban | 2026-11-08 | done | — | HTML drag does not work on touch screens, so each card also has a "move to" select (works on phones and with a keyboard). |
 | live sync | 2026-11-08 | partial | across devices needs Supabase Realtime | BroadcastChannel alone dropped some updates between tabs in testing; added the `storage` event as a second signal. 8/8 runs pass after. |
 
+## Speed (2026-11-12)
+
+The owner said every change took seconds to show. Measured on the real project: an edit waited for the server (~0.7–1 s), then for the Realtime echo (~1 s), then reloaded the whole board (~1 s, two round trips).
+
+Fix (commits `be59fe0`, `005004c`), all in `src/lib/data/supabase.ts`:
+- **Board cache.** Adding, renaming, moving and deleting items, and writing cells, now change the open board in memory first and save after.
+  - A value is checked before it shows.
+  - If the server refuses a change, the board goes back to how it was and an error appears.
+- **New items** get their id on the device and appear at once. Writes to a new item wait until it is saved; if saving it fails, that is reported through `onWriteError`.
+- **Changes from other people** arrive over Realtime as single rows and are applied in place, with no board reload. There is now one channel per board and one for account events, shared by all screens, instead of one channel per hook.
+- **Views and boards.** Filter and sort changes apply from the cache. A board loads in one round trip, and reopening a board shows the cached copy while it refreshes in the background.
+- **Saving note.** «بيحفظ…» shows in the top bar until every write lands, and reloading or closing the page during a save asks first. Found by the live test, which reloaded less than a second after a change and lost it.
+
+| live site, phone 390 px | before | after |
+| --- | --- | --- |
+| quick add → card with its status | 2.4 s | 0.08 s |
+| status change on this phone | 1.6 s | 0.28 s (saved in ~0.6–1 s) |
+| same change on a second phone | 1.6 s | 0.8–1.9 s (Realtime delivery) |
+
+Checks: 29/29 unit · 9/9 real-database · demo suites phone4/e2e/e2e2/e2e3 · live desktop flow and live phone speed test. The unit config no longer picks up the real-database tests.
+
 ## Phone first (2026-11-10)
 
 The owner said that adding data on a phone was hard, that too many details pulled his attention away, and that he couldn't see everything at a glance. Changes (commit `a14603c`, live):
