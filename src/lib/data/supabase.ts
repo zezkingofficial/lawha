@@ -99,6 +99,9 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
   const pendingItems = new Map<string, { item: Item; n: number }>(); // items with writes in flight: these win over server copies
   const inserting = new Map<string, Promise<unknown>>(); // new items whose insert has not landed yet
   const trash = new Map<string, Item>(); // items deleted here, kept for undo
+  const pendingOrder = new Map<string, string>(); // group/column id -> position dragged here, not yet saved
+  // a board reload that started before a write landed would bring back the old state: load once more
+  const settled = (boardId: string) => { if (loading.has(boardId)) again.add(boardId); };
   const errorSubs = new Set<(e: Error) => void>();
   const savingSubs = new Set<(busy: boolean) => void>();
   let inflight = 0;
@@ -145,7 +148,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       const row = await track((async () => { await inserting.get(prev.id); return send(); })());
       const left = pendingItems.get(prev.id);
       if (left && left.n > 1) pendingItems.set(prev.id, { ...left, n: left.n - 1 });
-      else { pendingItems.delete(prev.id); if (row) putItem(item(row)); }
+      else { pendingItems.delete(prev.id); if (row) putItem(item(row)); settled(prev.boardId); }
     } catch (e) {
       pendingItems.delete(prev.id);
       putItem(prev);
@@ -167,7 +170,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
         fail(error);
         const left = pendingItems.get(draft.id);
         if (left && left.n > 1) pendingItems.set(draft.id, { ...left, n: left.n - 1 });
-        else { pendingItems.delete(draft.id); putItem(item(data!)); }
+        else { pendingItems.delete(draft.id); putItem(item(data!)); settled(draft.boardId); }
       } catch (e) {
         pendingItems.delete(draft.id);
         setItems(draft.boardId, (items) => items.filter((i) => i.id !== draft.id));
@@ -248,7 +251,9 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
     const items = [...fetched.map((i) => pendingItems.get(i.id)?.item ?? i), ...[...pendingItems.values()].map((p) => p.item).filter((i) => i.boardId === boardId && !ids.has(i.id))]
       .filter((i) => !i.deletedAt).sort(byPos);
     const bundle: BoardBundle = {
-      board: board(b), groups: (g.data ?? []).map(group), columns: (cols.data ?? []).map(column), items,
+      board: board(b), items,
+      groups: (g.data ?? []).map(group).map((x) => (pendingOrder.has(x.id) ? { ...x, position: pendingOrder.get(x.id)! } : x)).sort(byPos),
+      columns: (cols.data ?? []).map(column).map((x) => (pendingOrder.has(x.id) ? { ...x, position: pendingOrder.get(x.id)! } : x)).sort(byPos),
       views: (vs.data ?? []).map(view), members, updateCounts, ...access(c, b, members),
     };
     cache.set(boardId, bundle);
@@ -472,6 +477,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
         const { error, count } = await track(Promise.resolve(sb.from('views').update(upd, { count: 'exact' }).eq('id', viewId)));
         fail(error);
         if (count === 0) throw new NotAllowed('cannot change this view');
+        if (owner) settled(owner.board.id);
       } catch (e) { if (owner) refresh(owner.board.id); throw e; }
     },
     async deleteView(viewId) { const { error } = await sb.from('views').delete().eq('id', viewId); fail(error); },
@@ -513,8 +519,11 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       const position = keyForSlot(owner.groups, id, to);
       cache.set(owner.board.id, { ...owner, groups: owner.groups.map((g) => (g.id === id ? { ...g, position } : g)).sort(byPos) });
       emit(owner.board.id);
+      pendingOrder.set(id, position);
       try { const { error } = await track(Promise.resolve(sb.from('groups').update({ position }).eq('id', id))); fail(error); }
-      catch (e) { refresh(owner.board.id); throw e; }
+      catch (e) { pendingOrder.delete(id); refresh(owner.board.id); throw e; }
+      pendingOrder.delete(id);
+      settled(owner.board.id);
     },
     async placeColumn(id, to) {
       const owner = [...cache.values()].find((b) => b.columns.some((c) => c.id === id));
@@ -529,8 +538,11 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       const position = keyForSlot(owner.columns.filter((c) => c.scope === col.scope), id, to);
       cache.set(owner.board.id, { ...owner, columns: owner.columns.map((c) => (c.id === id ? { ...c, position } : c)).sort(byPos) });
       emit(owner.board.id);
+      pendingOrder.set(id, position);
       try { const { error, count } = await track(Promise.resolve(sb.from('columns').update({ position }, { count: 'exact' }).eq('id', id))); fail(error); if (count === 0) throw new NotAllowed('view only'); }
-      catch (e) { refresh(owner.board.id); throw e; }
+      catch (e) { pendingOrder.delete(id); refresh(owner.board.id); throw e; }
+      pendingOrder.delete(id);
+      settled(owner.board.id);
     },
     async setGroupColor(id, color) { const { error } = await sb.from('groups').update({ color }).eq('id', id); fail(error); },
 
