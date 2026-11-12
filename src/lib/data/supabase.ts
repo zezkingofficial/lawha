@@ -39,7 +39,17 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime });
 }
 
-const uid = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+// ids are made on the device so new items can show before the server answers; they must be
+// real UUIDs, also on browsers without crypto.randomUUID (older iPhones, plain-http pages)
+const uid = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(b);
+  else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
 
 export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
   type Ctx = { userId: string; accountId: string | null; role: Role; profile: Profile };
@@ -141,6 +151,77 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
       refresh(prev.boardId);
       throw e;
     }
+  };
+
+  // Show a new item and hand it back now; writes to it wait for the insert, and a
+  // refused insert removes it again and is reported through onWriteError.
+  const showThenInsert = (row: Row, draft: Item, after?: string, first?: Promise<unknown>): Item => {
+    pendingItems.set(draft.id, { item: draft, n: 1 });
+    putItem(draft);
+    const insert = track((async () => {
+      try {
+        if (after) await inserting.get(after); // a task waits for its new parent order
+        if (first) await first;
+        const { data, error } = await sb.from('items').insert(row).select('*').single();
+        fail(error);
+        const left = pendingItems.get(draft.id);
+        if (left && left.n > 1) pendingItems.set(draft.id, { ...left, n: left.n - 1 });
+        else { pendingItems.delete(draft.id); putItem(item(data!)); }
+      } catch (e) {
+        pendingItems.delete(draft.id);
+        setItems(draft.boardId, (items) => items.filter((i) => i.id !== draft.id));
+        errorSubs.forEach((f) => f(e as Error));
+        throw e;
+      } finally { inserting.delete(draft.id); }
+    })());
+    insert.catch(() => {}); // reported through onWriteError and to any write that waits on it
+    inserting.set(draft.id, insert);
+    return draft;
+  };
+
+  // Subitem columns are made once per board, the first time someone adds a task there.
+  // Two quick taps must not make them twice, so the work is shared until it lands.
+  const subColsFor = new Map<string, Promise<void>>();
+  const ensureSubCols = (boardId: string, accountId: string) => {
+    let p = subColsFor.get(boardId);
+    if (p) return p;
+    p = (async () => {
+      const { count, error: e1 } = await sb.from('columns').select('id', { count: 'exact', head: true }).eq('board_id', boardId).eq('scope', 'subitem');
+      fail(e1);
+      if (count) return;
+      const { data, error } = await sb.from('columns').insert([
+        { account_id: accountId, board_id: boardId, scope: 'subitem', title: 'المسؤول', type: 'people', settings: {}, position: 'a0', width: 120 },
+        { account_id: accountId, board_id: boardId, scope: 'subitem', title: 'الحالة', type: 'status', settings: { labels: DEFAULT_LABELS }, position: 'a1', width: 150 },
+        { account_id: accountId, board_id: boardId, scope: 'subitem', title: 'التاريخ', type: 'date', settings: {}, position: 'a2', width: 120 },
+      ]).select('*');
+      fail(error);
+      const b = cache.get(boardId);
+      if (b) { cache.set(boardId, { ...b, columns: [...b.columns, ...(data ?? []).map(column)] }); emit(boardId); }
+      refresh(boardId); // a reload already under way would not have them
+    })();
+    p.catch(() => subColsFor.delete(boardId));
+    subColsFor.set(boardId, p);
+    return p;
+  };
+
+  const postUpdate = async (itemId: string, bodyText: string, mentionedUserIds: string[], opts: { parentUpdateId?: string; files?: NewFile[] } = {}): Promise<Update> => {
+    const c = await need();
+    await landed(itemId);
+    const known = findItem(itemId);
+    const it = known ? { board_id: known.boardId } : (await sb.from('items').select('board_id').eq('id', itemId).single()).data;
+    const text = bodyText.trim();
+    if (!text && !opts.files?.length) throw new Error('empty update');
+    const { data, error } = await sb.from('updates').insert({
+      account_id: c.accountId, board_id: it!.board_id, item_id: itemId, parent_update_id: opts.parentUpdateId ?? null, author_id: c.userId,
+      body: { text }, body_text: text.slice(0, 10000), mentioned_user_ids: [...new Set(mentionedUserIds)],
+    }).select('*').single();
+    fail(error);
+    const assetIds: string[] = [];
+    for (const f of opts.files ?? []) assetIds.push((await upload(c, it!.board_id, f, { itemId, updateId: data!.id })).id);
+    const b = cache.get(it!.board_id);
+    if (b) cache.set(b.board.id, { ...b, updateCounts: { ...b.updateCounts, [itemId]: (b.updateCounts[itemId] ?? 0) + 1 } });
+    emit(it!.board_id);
+    return { id: data!.id, boardId: data!.board_id, itemId, parentUpdateId: data!.parent_update_id, authorId: c.userId, bodyText: data!.body_text, mentionedUserIds: data!.mentioned_user_ids, assetIds, createdAt: data!.created_at, editedAt: null };
   };
 
   const fetchBoard = async (boardId: string): Promise<BoardBundle | null> => {
@@ -437,26 +518,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
         fail(error);
         return item(data!);
       }
-      // show it and hand it back now; writes to it wait for the insert, and a refused insert removes it again
-      pendingItems.set(draft.id, { item: draft, n: 1 });
-      putItem(draft);
-      const insert = track((async () => {
-        try {
-          const { data, error } = await sb.from('items').insert(row).select('*').single();
-          fail(error);
-          const left = pendingItems.get(draft.id);
-          if (left && left.n > 1) pendingItems.set(draft.id, { ...left, n: left.n - 1 });
-          else { pendingItems.delete(draft.id); putItem(item(data!)); }
-        } catch (e) {
-          pendingItems.delete(draft.id);
-          setItems(boardId, (items) => items.filter((i) => i.id !== draft.id));
-          errorSubs.forEach((f) => f(e as Error));
-          throw e;
-        } finally { inserting.delete(draft.id); }
-      })());
-      insert.catch(() => {}); // reported through onWriteError and to any write that waits on it
-      inserting.set(draft.id, insert);
-      return draft;
+      return showThenInsert(row, draft);
     },
     async renameItem(id, name) {
       if (!name.trim()) return;
@@ -529,22 +591,26 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
 
     async createSubitem(parentItemId, name) {
       const c = await need();
+      const clean = name.trim();
+      if (!clean) throw new Error('name required');
+      // the board is open: show the task now and save it behind (making the task columns first if needed)
+      const par = findItem(parentItemId);
+      const open = par && cache.get(par.boardId);
+      if (par && open) {
+        const first = open.columns.some((x) => x.scope === 'subitem') ? undefined : track(ensureSubCols(par.boardId, c.accountId));
+        const last = open.items.filter((i) => i.parentItemId === parentItemId).sort(byPos).at(-1);
+        const now = new Date().toISOString();
+        const row: Row = { id: uid(), account_id: c.accountId, board_id: par.boardId, parent_item_id: parentItemId, group_id: null, name: clean.slice(0, 500), created_by: c.userId, position: generateKeyBetween(last?.position ?? null, null) };
+        return showThenInsert(row, item({ ...row, vals: {}, deleted_at: null, created_at: now, updated_at: now }), parentItemId, first);
+      }
       await landed(parentItemId);
       const { data: parent } = await sb.from('items').select('board_id').eq('id', parentItemId).single();
       const boardId = parent!.board_id;
-      const { count } = await sb.from('columns').select('id', { count: 'exact', head: true }).eq('board_id', boardId).eq('scope', 'subitem');
-      if (!count) {
-        const { error } = await sb.from('columns').insert([
-          { account_id: c.accountId, board_id: boardId, scope: 'subitem', title: 'المسؤول', type: 'people', settings: {}, position: 'a0', width: 120 },
-          { account_id: c.accountId, board_id: boardId, scope: 'subitem', title: 'الحالة', type: 'status', settings: { labels: DEFAULT_LABELS }, position: 'a1', width: 150 },
-          { account_id: c.accountId, board_id: boardId, scope: 'subitem', title: 'التاريخ', type: 'date', settings: {}, position: 'a2', width: 120 },
-        ]);
-        fail(error);
-      }
+      await ensureSubCols(boardId, c.accountId);
       const pos = await lastPos('items', { parent_item_id: parentItemId });
-      const { data, error } = await sb.from('items').insert({ account_id: c.accountId, board_id: boardId, parent_item_id: parentItemId, group_id: null, name: name.trim().slice(0, 500), created_by: c.userId, position: generateKeyBetween(pos, null) }).select('*').single();
+      const { data, error } = await sb.from('items').insert({ account_id: c.accountId, board_id: boardId, parent_item_id: parentItemId, group_id: null, name: clean.slice(0, 500), created_by: c.userId, position: generateKeyBetween(pos, null) }).select('*').single();
       fail(error);
-      if (!count) refresh(boardId); else putItem(item(data!));
+      refresh(boardId);
       return item(data!);
     },
 
@@ -559,25 +625,7 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
         mentionedUserIds: r.mentioned_user_ids ?? [], assetIds: (a.data ?? []).filter((x) => x.update_id === r.id).map((x) => x.id), createdAt: r.created_at, editedAt: r.edited_at,
       }));
     },
-    async postUpdate(itemId, bodyText, mentionedUserIds, opts = {}) {
-      const c = await need();
-      await landed(itemId);
-      const known = findItem(itemId);
-      const it = known ? { board_id: known.boardId } : (await sb.from('items').select('board_id').eq('id', itemId).single()).data;
-      const text = bodyText.trim();
-      if (!text && !opts.files?.length) throw new Error('empty update');
-      const { data, error } = await sb.from('updates').insert({
-        account_id: c.accountId, board_id: it!.board_id, item_id: itemId, parent_update_id: opts.parentUpdateId ?? null, author_id: c.userId,
-        body: { text }, body_text: text.slice(0, 10000), mentioned_user_ids: [...new Set(mentionedUserIds)],
-      }).select('*').single();
-      fail(error);
-      const assetIds: string[] = [];
-      for (const f of opts.files ?? []) assetIds.push((await upload(c, it!.board_id, f, { itemId, updateId: data!.id })).id);
-      const b = cache.get(it!.board_id);
-      if (b) cache.set(b.board.id, { ...b, updateCounts: { ...b.updateCounts, [itemId]: (b.updateCounts[itemId] ?? 0) + 1 } });
-      emit(it!.board_id);
-      return { id: data!.id, boardId: data!.board_id, itemId, parentUpdateId: data!.parent_update_id, authorId: c.userId, bodyText: data!.body_text, mentionedUserIds: data!.mentioned_user_ids, assetIds, createdAt: data!.created_at, editedAt: null };
-    },
+    async postUpdate(itemId, bodyText, mentionedUserIds, opts = {}) { return track(postUpdate(itemId, bodyText, mentionedUserIds, opts)); },
     async editUpdate(id, bodyText) {
       const t = bodyText.trim();
       const { error } = await sb.from('updates').update({ body: { text: t }, body_text: t, edited_at: new Date().toISOString() }).eq('id', id);
@@ -662,7 +710,8 @@ export function createSupabaseLayer(sb: SupabaseClient): DataLayer {
         stale.add(boardId); // nobody is listening any more; refresh next time it opens
       };
     },
-    onSaving(cb) { savingSubs.add(cb); return () => { savingSubs.delete(cb); }; },
+    // tell a new listener the current state at once: screens remount on route changes mid-save
+    onSaving(cb) { savingSubs.add(cb); cb(inflight > 0); return () => { savingSubs.delete(cb); }; },
     onWriteError(cb) { errorSubs.add(cb); return () => { errorSubs.delete(cb); }; },
     subscribeAll(onChange) {
       allSubs.add(onChange);

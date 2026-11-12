@@ -97,6 +97,7 @@ function Form({ bundle, members, me, boards, onBoard, askedGroup, onDone }: {
   const [more, setMore] = useState(false);
   const [bad, setBad] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [noName, setNoName] = useState(false);
   // the board loads after the sheet opens, so focus the name here rather than in the sheet
   useEffect(() => { nameRef.current?.focus(); }, []);
   const set = (id: string, v: string | string[] | undefined) => { setBad(null); setVals((x) => { const n = { ...x }; if (v === undefined || v === '' || (Array.isArray(v) && !v.length)) delete n[id]; else n[id] = v; return n; }); };
@@ -118,7 +119,8 @@ function Form({ bundle, members, me, boards, onBoard, askedGroup, onDone }: {
   };
 
   const submit = async (next: boolean) => {
-    if (!name.trim() || busy) { nameRef.current?.focus(); return; }
+    if (busy) return;
+    if (!name.trim()) { setNoName(true); nameRef.current?.focus(); return; }
     const writes: [Column, CellValue][] = [];
     for (const c of cols) {
       const v = vals[c.id];
@@ -150,8 +152,10 @@ function Form({ bundle, members, me, boards, onBoard, askedGroup, onDone }: {
     <form className="grid gap-5" onSubmit={(e) => { e.preventDefault(); submit(false); }}>
       <div className="grid gap-2">
         <label className="sr-only" htmlFor="qa-name">{t('name')}</label>
-        <input id="qa-name" ref={nameRef} data-autofocus value={name} onChange={(e) => setName(e.target.value)} dir="auto" autoComplete="off" enterKeyHint="done"
-          placeholder={`${t('namePh')}: ${bundle.board.itemNoun}`} className="h-12 w-full rounded-md border border-border-input bg-bg px-3 text-md font-medium outline-none focus:border-focus" />
+        <input id="qa-name" ref={nameRef} data-autofocus value={name} onChange={(e) => { setName(e.target.value); setNoName(false); }} dir="auto" autoComplete="off" enterKeyHint="done"
+          aria-invalid={noName || undefined} aria-describedby={noName ? 'qa-name-err' : undefined}
+          placeholder={`${t('namePh')}: ${bundle.board.itemNoun}`} className={clsx('h-12 w-full rounded-md border bg-bg px-3 text-md font-medium outline-none focus:border-focus', noName ? 'border-danger' : 'border-border-input')} />
+        {noName && <p id="qa-name-err" role="alert" className="text-sm font-medium text-danger">{t('nameFirst')} {bundle.board.itemNoun}</p>}
         <div className="flex flex-wrap items-center gap-2 text-sm text-text-muted">
           <SelectPill label={t('boardLabel')} value={bundle.board.id} onChange={onBoard} options={boards.map((b) => ({ id: b.id, name: b.name }))} />
           {bundle.groups.length > 1 && (

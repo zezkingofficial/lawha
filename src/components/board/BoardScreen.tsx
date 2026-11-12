@@ -91,8 +91,8 @@ export function BoardScreen({ boardId }: { boardId: string }) {
       <ViewTabs bundle={bundle} active={view} onPick={(v) => setViewId(v.id)} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {canEdit && (phone || view.type === 'table') && (
-          <Button variant="primary" onClick={() => phone ? quickAdd({ boardId }) : setTimeout(() => newItemRef.current?.focus(), 0)}>
+        {canEdit && (
+          <Button variant="primary" onClick={() => quickAdd({ boardId })}>
             <Plus size={16} />{t('add')} {bundle.board.itemNoun}
           </Button>
         )}
@@ -719,7 +719,10 @@ function PhoneCard({ item, bundle, members, canEdit, doneIds, onOpen }: {
   const dv = date && (item.vals[date.id] as { date?: string } | undefined)?.date;
   const late = !!dv && dv < todayISO() && !(label && doneIds.has(label.id));
   const nv = num && (item.vals[num.id] as NumbersValue | undefined)?.number;
-  const subs = bundle.items.filter((i) => i.parentItemId === item.id).length;
+  const subItems = bundle.items.filter((i) => i.parentItemId === item.id);
+  const subs = subItems.length;
+  const subStatus = bundle.columns.find((c) => c.scope === 'subitem' && c.type === 'status');
+  const subsDone = subStatus ? subItems.filter((i) => doneIds.has((i.vals[subStatus.id] as StatusValue | undefined)?.label_id ?? '')).length : 0;
   const updates = bundle.updateCounts[item.id] ?? 0;
   return (
     <li className="flex overflow-hidden rounded-md border border-border bg-bg">
@@ -729,7 +732,7 @@ function PhoneCard({ item, bundle, members, canEdit, doneIds, onOpen }: {
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
           {dv && <span className={clsx('inline-flex items-center gap-1 tabular-nums', late && 'font-semibold text-danger')}><Calendar size={13} />{fmtDate(dv, locale)}{late && ` · ${t('overdue')}`}</span>}
           {nv && <span className="tabular-nums"><bdi>{fmtNumber(nv, locale)}</bdi> {num?.settings.unit}</span>}
-          {subs > 0 && <span className="inline-flex items-center gap-1"><ListChecks size={13} />{subs}</span>}
+          {subs > 0 && <span className={clsx('inline-flex items-center gap-1 tabular-nums', subsDone === subs && 'text-success')}><ListChecks size={13} /><bdi>{subsDone}/{subs}</bdi></span>}
           {updates > 0 && <span className="inline-flex items-center gap-1 text-accent"><MessageSquare size={13} />{updates}</span>}
         </span>
       </button>

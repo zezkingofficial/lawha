@@ -67,7 +67,7 @@ const dict = {
     otherDate: 'تاريخ تاني', me: 'أنا', moreFields: 'تفاصيل أكتر', lessFields: 'تفاصيل أقل', noEditBoards: 'مفيش لوحة تقدر تضيف فيها.',
     quickAdd: 'إضافة سريعة', changeStatus: 'غيّر الحالة', noStatus: 'من غير حالة', needsYou: 'محتاج منك', boardsOverview: 'اللوح بنظرة',
     allClear: 'مفيش حاجة متأخرة ولا مطلوبة النهارده.', overdueShort: 'متأخر', openBoard: 'افتح اللوحة', fixValue: 'صحّح القيمة دي',
-    homeTab: 'الرئيسية', saving: 'بيحفظ…', menuTab: 'المزيد', itemsWord: 'عنصر', nothingYet: 'لسه مفيش عناصر', addHere: 'أضف هنا',
+    homeTab: 'الرئيسية', tasks: 'المهام', updatesTitle: 'التحديثات', addTask: 'أضف مهمة', deleteTask: 'امسح المهمة', noTasks: 'مفيش مهام', emptyFields: 'حقول فاضية', hideEmpty: 'اخفي الحقول الفاضية', saving: 'بيحفظ…', nameFirst: 'اكتب الأول اسم', menuTab: 'المزيد', itemsWord: 'عنصر', nothingYet: 'لسه مفيش عناصر', addHere: 'أضف هنا',
   },
   en: {
     app: 'Lawha',
@@ -132,7 +132,7 @@ const dict = {
     otherDate: 'Other date', me: 'Me', moreFields: 'More fields', lessFields: 'Fewer fields', noEditBoards: 'There is no board you can add to.',
     quickAdd: 'Quick add', changeStatus: 'Change status', noStatus: 'No status', needsYou: 'Needs you', boardsOverview: 'Boards at a glance',
     allClear: 'Nothing overdue or due today.', overdueShort: 'overdue', openBoard: 'Open board', fixValue: 'Fix this value',
-    homeTab: 'Home', saving: 'Saving…', menuTab: 'More', itemsWord: 'items', nothingYet: 'No items yet', addHere: 'Add here',
+    homeTab: 'Home', tasks: 'Tasks', updatesTitle: 'Updates', addTask: 'Add a task', deleteTask: 'Delete task', noTasks: 'No tasks', emptyFields: 'Empty fields', hideEmpty: 'Hide empty fields', saving: 'Saving…', nameFirst: 'First type a name for this', menuTab: 'More', itemsWord: 'items', nothingYet: 'No items yet', addHere: 'Add here',
   },
 } as const;
 

@@ -1,35 +1,33 @@
 'use client';
 import clsx from 'clsx';
-import { CornerDownLeft, FileText, Paperclip, Pencil, Reply, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, CornerDownLeft, FileText, Paperclip, Pencil, Plus, Reply, Trash2, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useActivity, useAssets, useData, useMe, useMembers, useUpdates } from '@/lib/data/context';
 import { NotAllowed } from '@/lib/data/fake';
 import { CellError } from '@/lib/data/validate';
-import type { Asset, BoardBundle, Column, Item, NewFile, Profile, Update } from '@/lib/data/types';
+import type { Asset, BoardBundle, CellValue, Column, Item, NewFile, Profile, StatusValue, Update } from '@/lib/data/types';
 import { readFile } from '@/lib/files';
 import { useLang } from '@/lib/i18n';
-import { Avatar, IconButton, useIsPhone, useToast } from '../ui';
+import { Avatar, IconButton, useToast } from '../ui';
 import { AnyCell } from './cells';
-
-type Tab = 'updates' | 'details' | 'files' | 'activity';
 
 export function ItemPanel({ bundle, itemId, onClose, canEdit }: { bundle: BoardBundle; itemId: string; onClose: () => void; canEdit: boolean }) {
   const { t } = useLang();
   const item = bundle.items.find((i) => i.id === itemId);
-  const phone = useIsPhone();
-  // on a phone the fields come first: that is what people open an item to change
-  const [tab, setTab] = useState<Tab>(() => (phone ? 'details' : 'updates'));
-  const tabs: Tab[] = phone ? ['details', 'updates', 'files', 'activity'] : ['updates', 'details', 'files', 'activity'];
   const closeRef = useRef<HTMLButtonElement>(null);
   const opener = useRef<Element | null>(null);
 
+  // run once per opening: the parent re-renders on every data change and passes a new onClose,
+  // which must not move focus back to the close button while someone is typing
+  const closeFn = useRef(onClose);
+  closeFn.current = onClose;
   useEffect(() => {
     opener.current = document.activeElement;
     closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('[data-radix-popper-content-wrapper]')) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('[data-radix-popper-content-wrapper]')) closeFn.current(); };
     addEventListener('keydown', onKey);
     return () => { removeEventListener('keydown', onKey); (opener.current as HTMLElement | null)?.focus?.(); };
-  }, [onClose]);
+  }, []);
 
   const parent = item?.parentItemId ? bundle.items.find((i) => i.id === item.parentItemId) : null;
   const group = bundle.groups.find((g) => g.id === (parent ?? item)?.groupId);
@@ -53,19 +51,15 @@ export function ItemPanel({ bundle, itemId, onClose, canEdit }: { bundle: BoardB
               </div>
               <IconButton ref={closeRef} label={t('close')} onClick={onClose}><X size={18} /></IconButton>
             </header>
-            <div role="tablist" className="flex gap-1 overflow-x-auto border-b border-border px-3">
-              {tabs.map((k) => (
-                <button key={k} type="button" role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
-                  className={clsx('-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm', tab === k ? 'border-accent font-semibold' : 'border-transparent text-text-muted hover:text-text')}>
-                  {t(k === 'updates' ? 'updates' : k === 'details' ? 'details' : k === 'files' ? 'files' : 'activity')}
-                </button>
-              ))}
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-              {tab === 'updates' && <UpdatesTab item={item} canEdit={canEdit} />}
-              {tab === 'details' && <DetailsTab item={item} bundle={bundle} canEdit={canEdit} />}
-              {tab === 'files' && <FilesTab item={item} />}
-              {tab === 'activity' && <ActivityTab item={item} bundle={bundle} />}
+            {/* one page, read top to bottom: the short details, the tasks, then the conversation */}
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-8 pt-4">
+              <div className="grid gap-6">
+                <section aria-labelledby="sec-details"><SectionTitle id="sec-details">{t('details')}</SectionTitle><DetailsTab item={item} bundle={bundle} canEdit={canEdit} /></section>
+                {!item.parentItemId && <section aria-labelledby="sec-tasks"><Checklist item={item} bundle={bundle} canEdit={canEdit} /></section>}
+                <section aria-labelledby="sec-updates"><SectionTitle id="sec-updates">{t('updatesTitle')}</SectionTitle><UpdatesTab item={item} canEdit={canEdit} /></section>
+                <More title={t('files')}><FilesTab item={item} /></More>
+                <More title={t('activity')}><ActivityTab item={item} bundle={bundle} /></More>
+              </div>
             </div>
           </>
         )}
@@ -314,31 +308,145 @@ function FileGrid({ files }: { files: Asset[] }) {
 
 // ---------------------------------------------------------------- details, files, activity
 
+function SectionTitle({ id, children, extra }: { id: string; children: React.ReactNode; extra?: React.ReactNode }) {
+  return (
+    <div className="mb-2 flex items-center gap-2">
+      <h3 id={id} className="text-sm font-bold">{children}</h3>
+      {extra}
+    </div>
+  );
+}
+
+function More({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-md border border-border">
+      <summary className="flex h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-semibold text-text-muted [&::-webkit-details-marker]:hidden">
+        <ChevronDown size={16} className="transition-transform duration-base group-open:rotate-180" />{title}
+      </summary>
+      <div className="border-t border-border p-3">{children}</div>
+    </details>
+  );
+}
+
+const isEmpty = (v: CellValue | undefined) => {
+  if (v === undefined || v === null) return true;
+  const o = v as Record<string, unknown>;
+  return Object.values(o).every((x) => x === '' || x === null || x === undefined || x === false || (Array.isArray(x) && !x.length));
+};
+const WIDE = new Set(['long_text', 'files', 'text', 'link', 'email', 'timeline']);
+
+// Short version: filled fields as small tiles, two to a row; empty ones fold away.
 function DetailsTab({ item, bundle, canEdit }: { item: Item; bundle: BoardBundle; canEdit: boolean }) {
   const { t } = useLang();
   const d = useData();
   const toast = useToast();
   const { data: me } = useMe();
   const { data: members = [] } = useMembers();
+  const [showAll, setShowAll] = useState(false);
   const cols = bundle.columns.filter((c) => c.scope === (item.parentItemId ? 'subitem' : 'item'));
   const doneIds = new Set(cols.flatMap((c) => (c.settings.labels ?? []).filter((l) => l.done).map((l) => l.id)));
+  const empty = cols.filter((c) => isEmpty(item.vals[c.id]));
+  const shown = showAll || empty.length === cols.length ? cols : cols.filter((c) => !empty.includes(c));
   const set = async (c: Column, v: Parameters<typeof d.setCell>[2]) => {
     try { await d.setCell(item.id, c.id, v); }
     catch (e) { toast({ tone: 'error', text: e instanceof NotAllowed ? t('viewOnlyError') : e instanceof CellError ? t('invalidValue') : (e as Error).message }); }
   };
   return (
-    <dl className="grid gap-2">
-      {cols.map((c) => (
-        <div key={c.id} className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
-          <dt className="text-sm text-text-muted">{c.title}</dt>
-          <dd className="flex min-h-[36px] overflow-hidden rounded-sm border border-border">
-            <AnyCell item={item} column={c} members={members} me={me ?? null} canEdit={canEdit} doneIds={doneIds}
-              onSet={(v) => set(c, v)} onInvalid={() => toast({ tone: 'error', text: t('invalidValue') })} />
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <div className="grid gap-2">
+      <dl className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-2 sm:grid-cols-[repeat(3,minmax(0,1fr))]">
+        {shown.map((c) => (
+          <div key={c.id} className={clsx('grid min-w-0 content-start overflow-hidden rounded-sm border border-border', WIDE.has(c.type) && 'col-span-2 sm:col-span-3')}>
+            <dt className="truncate px-2 pt-1 text-[11px] font-medium text-text-subtle">{c.title}</dt>
+            <dd className="flex min-h-[34px]">
+              <AnyCell item={item} column={c} members={members} me={me ?? null} canEdit={canEdit} doneIds={doneIds}
+                onSet={(v) => set(c, v)} onInvalid={() => toast({ tone: 'error', text: t('invalidValue') })} />
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {empty.length > 0 && empty.length < cols.length && (
+        <button type="button" onClick={() => setShowAll((x) => !x)} aria-expanded={showAll}
+          className="inline-flex h-8 w-fit items-center gap-1 rounded-sm px-2 text-sm text-accent hover:bg-surface-hover">
+          {showAll ? t('hideEmpty') : <><Plus size={14} />{t('emptyFields')} ({empty.length})</>}
+        </button>
+      )}
+    </div>
   );
+}
+
+// Inner tasks for an order: a tick marks one done (and strikes it through). They are the
+// order's subitems, so they also show on the board; "done" is the subitem status's done label.
+function Checklist({ item, bundle, canEdit }: { item: Item; bundle: BoardBundle; canEdit: boolean }) {
+  const { t } = useLang();
+  const d = useData();
+  const toast = useToast();
+  const [v, setV] = useState('');
+  const input = useRef<HTMLInputElement>(null);
+  const tasks = bundle.items.filter((i) => i.parentItemId === item.id);
+  const status = bundle.columns.find((c) => c.scope === 'subitem' && c.type === 'status');
+  const doneLabel = (status?.settings.labels ?? []).find((l) => l.done);
+  const isDone = (s: Item) => !!status && (status.settings.labels ?? []).some((l) => l.done && l.id === (s.vals[status.id] as StatusValue | undefined)?.label_id);
+  const done = tasks.filter(isDone).length;
+  const err = (e: unknown) => toast({ tone: 'error', text: e instanceof NotAllowed ? t('viewOnlyError') : (e as Error).message });
+  const add = async () => {
+    const name = v.trim();
+    if (!name) return;
+    setV('');
+    try { await d.createSubitem(item.id, name); } catch (e) { err(e); }
+    input.current?.focus();
+  };
+  return (
+    <>
+      <SectionTitle id="sec-tasks" extra={tasks.length > 0 && (
+        <span className="ms-auto flex items-center gap-2 text-xs tabular-nums text-text-muted">
+          <span className="h-[6px] w-20 overflow-hidden rounded-pill bg-surface-hover"><span className="block h-full rounded-pill bg-success transition-[width] duration-base" style={{ width: `${(done / tasks.length) * 100}%` }} /></span>
+          <bdi>{done}/{tasks.length}</bdi>
+        </span>
+      )}>{t('tasks')}</SectionTitle>
+      <ul className="grid">
+        {tasks.map((s) => {
+          const on = isDone(s);
+          return (
+            <li key={s.id} className="group flex min-h-[44px] items-center gap-2 border-b border-border last:border-b-0">
+              <button type="button" role="checkbox" aria-checked={on} aria-label={s.name} disabled={!canEdit || !status || !doneLabel}
+                onClick={() => d.setCell(s.id, status!.id, on ? null : { label_id: doneLabel!.id }).catch(err)}
+                className={clsx('grid h-6 w-6 flex-none place-items-center rounded-xs border-2 transition-colors duration-fast',
+                  on ? 'border-success bg-success text-on-accent' : 'border-border-strong hover:border-accent')}>
+                {on && <Check size={16} strokeWidth={3} />}
+              </button>
+              <TaskName task={s} done={on} canEdit={canEdit} />
+              {canEdit && (
+                <IconButton small label={`${t('deleteTask')}: ${s.name}`} className="opacity-60 group-hover:opacity-100" onClick={async () => {
+                  try { await d.deleteItem(s.id); toast({ text: t('deleted'), undo: () => d.restoreItem(s.id) }); } catch (e) { err(e); }
+                }}><Trash2 size={14} /></IconButton>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {tasks.length === 0 && !canEdit && <p className="text-sm text-text-muted">{t('noTasks')}</p>}
+      {canEdit && (
+        <form onSubmit={(e) => { e.preventDefault(); add(); }} className="mt-1 flex items-center gap-2">
+          <Plus size={18} className="flex-none text-text-subtle" />
+          <input ref={input} value={v} onChange={(e) => setV(e.target.value)} placeholder={t('addTask')} aria-label={t('addTask')} dir="auto" enterKeyHint="send"
+            className="h-11 min-w-0 flex-1 rounded-sm border border-transparent bg-transparent px-1 text-sm outline-none hover:border-border focus:border-focus" />
+          {v.trim() && <button type="submit" className="h-9 flex-none rounded-sm bg-accent px-3 text-sm font-medium text-on-accent">{t('add')}</button>}
+        </form>
+      )}
+    </>
+  );
+}
+
+function TaskName({ task, done, canEdit }: { task: Item; done: boolean; canEdit: boolean }) {
+  const d = useData();
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return <input autoFocus defaultValue={task.name} aria-label={task.name} dir="auto" className="h-9 min-w-0 flex-1 rounded-sm border border-focus bg-bg px-1 text-sm"
+      onBlur={(e) => { setEditing(false); if (e.target.value.trim() && e.target.value !== task.name) d.renameItem(task.id, e.target.value); }}
+      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditing(false); }} />;
+  }
+  const text = <span className={clsx('min-w-0 flex-1 break-words text-start text-sm', done && 'text-text-subtle line-through')} dir="auto">{task.name}</span>;
+  return canEdit ? <button type="button" onClick={() => setEditing(true)} className="flex min-w-0 flex-1 py-2 text-start">{text}</button> : text;
 }
 
 function FilesTab({ item }: { item: Item }) {
