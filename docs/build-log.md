@@ -23,6 +23,51 @@ Data: Supabase (`src/lib/data/supabase.ts`) when the env vars are set; the in-br
 | S12 kanban | 2026-11-08 | done | — | HTML drag does not work on touch screens, so each card also has a "move to" select (works on phones and with a keyboard). |
 | live sync | 2026-11-08 | partial | across devices needs Supabase Realtime | BroadcastChannel alone dropped some updates between tabs in testing; added the `storage` event as a second signal. 8/8 runs pass after. |
 
+## Drag and due dates (2026-11-12)
+
+The owner asked for:
+- a warning when a date has passed
+- a countdown sign as the deadline gets close
+- quick, light dragging to put one item before or after another
+
+Built from his description in our own style (commits `eac093b` and `897e8ac`).
+
+**Drag** (`src/components/board/drag.ts`)
+- One pointer-based helper is used for:
+  - rows, which can be dropped into any group
+  - phone cards: press and hold, then move
+  - group headers: every group folds to its header while one is moving
+  - column headers: every group follows the new column order
+- While dragging:
+  - a light copy follows the pointer and a line shows where it will land
+  - the page scrolls when the pointer nears an edge
+  - Esc cancels
+  - on release the item glides into place, and a plain click still opens or edits
+- It replaces the old HTML drag handle, which did not work on touch screens.
+- New data layer calls `placeGroup` and `placeColumn`. They are optimistic on Supabase, and positions dragged here win over a fetched copy until they are saved.
+
+**Due dates** (`dueState` and `DueMark` in `cells.tsx`)
+- Late: an alert sign and red text, e.g. «متأخر 3 أيام».
+- Three days or less left: a ring that fills as the time since the item was made runs out. It turns red on the last day («آخر يوم النهارده»).
+- Status done: a check, and the date is struck through.
+- Shown in the table, on phone cards and in the date picker.
+
+**Found while testing:** a board reload that started before a write was saved could finish after it and bring back the old order or value. Any reload that overlaps a write now runs once more.
+
+**Checks**
+- new suite `drag6`:
+  - due marks
+  - moving a row inside its group and into another group
+  - a click still opens the item
+  - moving a column; the other group follows
+  - moving a group
+  - the order is kept after reload
+  - Esc cancels
+  - press-and-hold drag on the phone with real touch events
+- older suites pass; e2e3 now uses the pointer drag
+- real database, locally and on the live site: rows, columns and groups moved and still in place after reload
+- live flow test
+
 ## Order page on one screen + add button (2026-11-12)
 
 The owner reported that the add-order button did nothing. He also asked that opening an order show a short version of the details, then a checklist of internal tasks he can tick off (struck through when done), then the updates, all on one page with no tabs.
